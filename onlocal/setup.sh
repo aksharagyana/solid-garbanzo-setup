@@ -49,5 +49,6 @@ source "${setup_path}/docker_util.sh"
 source "${setup_path}/ai.sh"
 source "${setup_path}/dns.sh"
 source "${setup_path}/tools.sh"
+source "${setup_path}/acr.sh"
 
 # source_all_sh "${COMMON_PROJECT_HELPER}"
