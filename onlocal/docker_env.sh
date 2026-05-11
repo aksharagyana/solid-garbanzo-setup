@@ -10,11 +10,11 @@ OUTPUT_FILE="${DOCKER_ENV_FILE:-.env}"
 
 # Mapping: OUTPUT_KEY -> ENV_VARIABLE_NAME
 typeset -A MAPPING=(
-    TENV_GITHUB_TOKEN GITHUB_TOKEN
-    NPM_TOKEN         NPM_TOKEN
-    GITLAB_TOKEN      GITLAB_TOKEN
-    PROJECT_ENV       PROJECT_ENV
-    UTILS_ON_CONT     UTILS_ON_CONT
+    TENV_GITHUB_TOKEN           GITHUB_TOKEN
+    NPM_TOKEN                   NPM_TOKEN
+    GITLAB_TOKEN                GITLAB_TOKEN
+    PROJECT_ENV_ON_CONT         PROJECT_ENV_ON_CONT
+    UTILS_ON_CONT               UTILS_ON_CONT
 )
 
 echo "=== Generating ${OUTPUT_FILE} from selected environment variables ==="
