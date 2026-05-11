@@ -1,13 +1,15 @@
 #!/bin/bash
 
 # List your utility script filenames here (space-separated)
-UTIL_SCRIPTS=("envvars.sh" "tf.sh" "az.sh" "util.sh" "gitcmd.sh" "gchr.sh" "pre-commit.sh" "ngrok.sh" "terragunt_setup.sh" "ot.sh" "scp.sh" "az_sa_blob.sh")
+UTIL_SCRIPTS=("tf.sh" "az.sh" "util.sh" "gitcmd.sh" "gchr.sh" "pre-commit.sh" "ngrok.sh" "terragunt_setup.sh" "ot.sh" "scp.sh" "az_sa_blob.sh")
 
 # Base directory for utility scripts
-UTILS_DIR="/code/utils"
+UTILS_DIR="${UTILS_ON_CONT:-/code/utils}"
 BASHRC="/etc/bash.bashrc"
 
 echo "🔧 Updating $BASHRC and setting up utility scripts..."
+
+source "${PROJECT_ENV_ON_CONT}"
 
 for script in "${UTIL_SCRIPTS[@]}"; do
     SCRIPT_PATH="$UTILS_DIR/$script"
@@ -39,13 +41,18 @@ echo "🔧 Updating Git Config..."
 switch_to_azure
 echo "✅ Git config done"
 
-echo "🔧 Setting terrafrom cloud and Sclar ..."
+TF_RC="/code/utils/credentials.tfrc.json"
+if [[ -f "${TF_RC}" ]]; then
+    echo "🔧 Setting terrafrom cloud and Sclar ..."
 
-mkdir -p /root/.terraform.d/
-cat /code/utils/credentials.tfrc.json > /root/.terraform.d/credentials.tfrc.json
+    mkdir -p /root/.terraform.d/
+    cat "${TF_RC}" > /root/.terraform.d/credentials.tfrc.json
 
 
-echo "✅ Terrafrom cloud and Sclar done"
+    echo "✅ Terrafrom cloud and Sclar done"
+else
+    echo "❌ Warning: $TF_RC not found, skipping."
+fi
 
 # apt install -y pipx
 # pipx install pre-commit
