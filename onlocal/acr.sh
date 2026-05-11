@@ -23,7 +23,7 @@ acr_retag_multiarch_image() {
     echo "ACR         : $ACR_NAME"
     echo "Source      : $SRC_IMAGE"
     echo "Destination : $DEST_IMAGE"
-
+    az acr login -n "$ACR_NAME"
     az acr import \
         --name "$ACR_NAME" \
         --source "${ACR_NAME}.azurecr.io/${SRC_IMAGE}" \
