@@ -14,6 +14,7 @@ typeset -A MAPPING=(
     NPM_TOKEN         NPM_TOKEN
     GITLAB_TOKEN      GITLAB_TOKEN
     PROJECT_ENV       PROJECT_ENV
+    UTILS_ON_CONT     UTILS_ON_CONT
 )
 
 echo "=== Generating ${OUTPUT_FILE} from selected environment variables ==="
