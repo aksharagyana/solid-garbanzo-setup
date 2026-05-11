@@ -48,5 +48,6 @@ source "${setup_path}/docker_env.sh"
 source "${setup_path}/docker_util.sh"
 source "${setup_path}/ai.sh"
 source "${setup_path}/dns.sh"
+source "${setup_path}/tools.sh"
 
 # source_all_sh "${COMMON_PROJECT_HELPER}"
