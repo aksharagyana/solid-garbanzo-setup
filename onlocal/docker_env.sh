@@ -13,6 +13,7 @@ typeset -A MAPPING=(
     TENV_GITHUB_TOKEN GITHUB_TOKEN
     NPM_TOKEN         NPM_TOKEN
     GITLAB_TOKEN      GITLAB_TOKEN
+    PROJECT_ENV       PROJECT_ENV
 )
 
 echo "=== Generating ${OUTPUT_FILE} from selected environment variables ==="
