@@ -1,5 +1,47 @@
 #!/bin/bash
 
+source_all_sh() {
+    local DIR="${1:-.}"
+
+    # expand ~
+    DIR="${DIR/#\~/$HOME}"
+
+    if [[ ! -d "$DIR" ]]; then
+        echo "ERROR: Directory not found: $DIR"
+        return 1
+    fi
+
+    # track sourced files (global associative array)
+    if [[ -z "${__SOURCED_SH_FILES_INIT:-}" ]]; then
+        declare -gA __SOURCED_SH_FILES
+        __SOURCED_SH_FILES_INIT=1
+    fi
+
+    local file
+    shopt -s nullglob
+
+    for file in "$DIR"/*.sh; do
+        # normalize path
+        local abs_file
+        abs_file="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+
+        # skip already sourced files
+        if [[ -n "${__SOURCED_SH_FILES[$abs_file]:-}" ]]; then
+            echo "Skipping already sourced: $abs_file"
+            continue
+        fi
+
+        echo "Sourcing: $abs_file"
+        # shellcheck source=/dev/null
+        source "$abs_file"
+
+        __SOURCED_SH_FILES["$abs_file"]=1
+    done
+
+    shopt -u nullglob
+}
+
+
 # List your utility script filenames here (space-separated)
 UTIL_SCRIPTS=("tf.sh" "az.sh" "util.sh" "gitcmd.sh" "gchr.sh" "pre-commit.sh" "ngrok.sh" "terragunt_setup.sh" "ot.sh" "scp.sh" "az_sa_blob.sh")
 
@@ -32,6 +74,8 @@ for script in "${UTIL_SCRIPTS[@]}"; do
         echo "❌ Warning: $SCRIPT_PATH not found, skipping."
     fi
 done
+
+source_all_sh "/code/utils"
 
 # Source the updated bashrc
 echo "🔄 Reloading $BASHRC..."
