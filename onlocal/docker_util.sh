@@ -3,19 +3,19 @@ gchr_login(){
 }
 
 dev_go(){
-    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${GO_IMAGE}" -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
+    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${GO_IMAGE}" /bin/bash -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
 }
 
 dev_python(){
-    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${PYTHON_IMAGE}" -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
+    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${PYTHON_IMAGE}" /bin/bash -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
 }
 
 dev_node(){
-    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -p 3000:3000 -p 7007:7007 -p 5173:5173  -v /var/run/docker.sock:/var/run/docker.sock -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${DEBIAN_IMAGE}" -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
+    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -p 3000:3000 -p 7007:7007 -p 5173:5173  -v /var/run/docker.sock:/var/run/docker.sock -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${DEBIAN_IMAGE}" /bin/bash -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
 }
 
 dev_debian(){
-    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${DEBIAN_IMAGE}" -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
+    docker run -it --pull=always --env-file "${DOCKER_ENV_FILE}" -v "${CODE_ON_MAC}":"${CODE_ON_CONT}" -v "${UTILS_ON_MAC}":"${UTILS_ON_CONT}" "${DEBIAN_IMAGE}" /bin/bash -c "export PATH=\$UTILS_ON_CONT:\$PATH && exec bash"
 }
 
 docker_cleanup(){
