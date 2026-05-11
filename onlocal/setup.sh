@@ -1,6 +1,7 @@
 setup_path="/Users/$(whoami)/code/solid-garbanzo-setup/onlocal"
 
 source_all_sh() {
+
     local DIR="${1:-.}"
 
     # expand ~
@@ -11,34 +12,35 @@ source_all_sh() {
         return 1
     fi
 
-    # track sourced files (global associative array)
-    if [[ -z "${__SOURCED_SH_FILES_INIT:-}" ]]; then
-        declare -gA __SOURCED_SH_FILES
-        __SOURCED_SH_FILES_INIT=1
-    fi
+    # zsh-safe + bash-safe sourced tracking
+    typeset -gA __SOURCED_SH_FILES 2>/dev/null || true
 
-    local file
-    shopt -s nullglob
+    local found=0
 
-    for file in "$DIR"/*.sh; do
-        # normalize path
+    for file in "$DIR"/*.sh(N); do
+
+        found=1
+
+        # absolute path
         local abs_file
         abs_file="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
 
-        # skip already sourced files
-        if [[ -n "${__SOURCED_SH_FILES[$abs_file]:-}" ]]; then
+        # skip already sourced
+        if [[ -n "${__SOURCED_SH_FILES[$abs_file]}" ]]; then
             echo "Skipping already sourced: $abs_file"
             continue
         fi
 
         echo "Sourcing: $abs_file"
-        # shellcheck source=/dev/null
+
         source "$abs_file"
 
-        __SOURCED_SH_FILES["$abs_file"]=1
+        __SOURCED_SH_FILES[$abs_file]=1
     done
 
-    shopt -u nullglob
+    if [[ $found -eq 0 ]]; then
+        echo "No .sh files found in: $DIR"
+    fi
 }
 
 source "/Users/$(whoami)/code/env.sh"
