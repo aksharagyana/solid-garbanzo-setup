@@ -1,4 +1,4 @@
-az_key_get_secret() {
+az_kv_get_secret() {
     local vault_name=$1
     local secret_name=$2
 
