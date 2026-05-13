@@ -43,7 +43,7 @@ source_all_sh() {
 
 
 # List your utility script filenames here (space-separated)
-UTIL_SCRIPTS=("tf.sh" "az.sh" "util.sh" "gitcmd.sh" "gchr.sh" "pre-commit.sh" "ngrok.sh" "terragunt_setup.sh" "ot.sh" "scp.sh" "az_sa_blob.sh")
+UTIL_SCRIPTS=("tf.sh" "az.sh" "util.sh" "gitcmd.sh" "gchr.sh" "pre-commit.sh" "ngrok.sh" "terragunt_setup.sh" "ot.sh" "scp.sh" "az_sa_blob.sh" "az_kv.sh")
 
 # Base directory for utility scripts
 UTILS_DIR="${UTILS_ON_CONT:-/code/utils}"
