@@ -680,3 +680,32 @@ git_trigger_pipeline() {
     echo "Pushing empty commit to: $branch"
     git push origin "$branch"
 }
+
+
+git_revert_last_commit(){
+  # 1. Get the current branch name
+  BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  
+  # 2. Check if we are actually in a git repository
+  if [ $? -ne 0 ]; then
+      echo "Error: This directory is not a git repository."
+      exit 1
+  fi
+  
+  echo "Targeting branch: $BRANCH"
+  
+  # 3. Revert the last commit
+  # --no-edit keeps the default "Revert '...'" message to stay automated
+  git revert HEAD --no-edit
+  
+  # 4. Check if revert was successful (e.g., no conflicts)
+  if [ $? -eq 0 ]; then
+      echo "Revert successful. Pushing to origin/$BRANCH..."
+      git push origin "$BRANCH"
+  else
+      echo "Error: Revert failed. You might have manual conflicts to resolve."
+      exit 1
+  fi
+  
+  echo "Done! The last commit has been undone and pushed."
+}
