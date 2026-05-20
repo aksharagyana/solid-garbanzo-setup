@@ -1,0 +1,18 @@
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# graphify — regeneratable knowledge graph (run: graphify update .)
+.graphify/
+graphify-out/
+**/graphify-out/
+.graphify_*.json

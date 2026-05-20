@@ -41,41 +41,45 @@ source_all_sh() {
     shopt -u nullglob
 }
 
-
-# List your utility script filenames here (space-separated)
-UTIL_SCRIPTS=("tf.sh" "az.sh" "util.sh" "gitcmd.sh" "gchr.sh" "pre-commit.sh" "ngrok.sh" "terragunt_setup.sh" "ot.sh" "scp.sh" "az_sa_blob.sh" "az_kv.sh")
-
-# Base directory for utility scripts
-UTILS_DIR="${UTILS_ON_CONT:-/code/utils}"
+# Resolve project root from this script's location (works for any checkout path).
+# UTILS_ON_CONT overrides utils dir when utils is mounted elsewhere (e.g. in Docker).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${SCRIPT_DIR}"
+UTILS_DIR="${UTILS_ON_CONT:-${PROJECT_ROOT}/utils}"
 BASHRC="/etc/bash.bashrc"
 
 echo "🔧 Updating $BASHRC and setting up utility scripts..."
+echo "📁 Utils directory: $UTILS_DIR"
 
 source "${PROJECT_ENV_ON_CONT}"
 
-for script in "${UTIL_SCRIPTS[@]}"; do
-    SCRIPT_PATH="$UTILS_DIR/$script"
+shopt -s nullglob
+util_scripts=("$UTILS_DIR"/*.sh)
+shopt -u nullglob
 
-    if [[ -f "$SCRIPT_PATH" ]]; then
-        echo "⚙️  Processing $script..."
+if [[ ${#util_scripts[@]} -eq 0 ]]; then
+    echo "❌ Warning: No .sh files found in $UTILS_DIR"
+fi
 
-        # Make the script executable
-        chmod u+x "$SCRIPT_PATH"
+for SCRIPT_PATH in "${util_scripts[@]}"; do
+    script="$(basename "$SCRIPT_PATH")"
 
-        # Add source line to bashrc if not already present
-        SOURCE_LINE="source $SCRIPT_PATH"
-        if ! grep -Fxq "$SOURCE_LINE" "$BASHRC"; then
-            echo "$SOURCE_LINE" >> "$BASHRC"
-            echo "✅ Added source line for $script"
-        else
-            echo "ℹ️  Source line for $script already exists in $BASHRC"
-        fi
+    echo "⚙️  Processing $script..."
+
+    # Make the script executable
+    chmod u+x "$SCRIPT_PATH"
+
+    # Add source line to bashrc if not already present
+    SOURCE_LINE="source $SCRIPT_PATH"
+    if ! grep -Fxq "$SOURCE_LINE" "$BASHRC"; then
+        echo "$SOURCE_LINE" >> "$BASHRC"
+        echo "✅ Added source line for $script"
     else
-        echo "❌ Warning: $SCRIPT_PATH not found, skipping."
+        echo "ℹ️  Source line for $script already exists in $BASHRC"
     fi
 done
 
-source_all_sh "/code/utils"
+source_all_sh "$UTILS_DIR"
 
 # Source the updated bashrc
 echo "🔄 Reloading $BASHRC..."
@@ -85,13 +89,12 @@ echo "🔧 Updating Git Config..."
 switch_to_azure
 echo "✅ Git config done"
 
-TF_RC="/code/utils/credentials.tfrc.json"
+TF_RC="${UTILS_DIR}/credentials.tfrc.json"
 if [[ -f "${TF_RC}" ]]; then
     echo "🔧 Setting terrafrom cloud and Sclar ..."
 
     mkdir -p /root/.terraform.d/
     cat "${TF_RC}" > /root/.terraform.d/credentials.tfrc.json
-
 
     echo "✅ Terrafrom cloud and Sclar done"
 else
