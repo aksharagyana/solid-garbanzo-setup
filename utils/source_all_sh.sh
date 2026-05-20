@@ -3,6 +3,7 @@
 # Usage:
 #   source_all_sh <dir> [exclude_basename ...]
 #   register_all_sh <bashrc_file> <dir> [exclude_basename ...]
+#   unregister_all_sh <bashrc_file> [exclude_basename ...]
 
 _sh_normalize_dir() {
     local dir="${1/#\~/$HOME}"
@@ -118,4 +119,18 @@ register_all_sh() {
 
     _REGISTER_BASHRC="$bashrc_file"
     _sh_foreach "$dir" _sh_register_file "$@"
+}
+
+unregister_all_sh() {
+    local bashrc_file="$1"
+    shift
+    local excludes=("$@")
+    local exc
+
+    [[ -f "$bashrc_file" ]] || return 0
+
+    for exc in "${excludes[@]}"; do
+        # Drop stale bootstrap lines: source /any/path/exc
+        sed -i "\|source .*/${exc}|d" "$bashrc_file"
+    done
 }
