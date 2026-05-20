@@ -1,36 +1,4 @@
 
-# Local chart example:
-# helm_upgrade \
-#   -n dev \
-#   -c ./charts/myapp \
-#   -f values.yaml
-
-# OCI chart example:
-# helm_upgrade \
-#   -n dev \
-#   -c oci://my-registry.com/charts/myapp \
-#   -f values.yaml
-
-# OCI chart example with version:
-# helm_upgrade \
-#   -n dev \
-#   -c oci://my-registry.com/charts/myapp --version 1.0.0 \
-#   -f values.yaml
-
-# Remote Helm repository example:
-# helm_upgrade \
-#   -n prod \
-#   -c bitnami/nginx \
-#   -f values.yaml
-
-# It will also support other Helm flags automatically, for example:
-# --wait
-# --timeout 10m
-# --atomic
-# --create-namespace
-# --set image.tag=v1
-# --history-max 5
-
 helm_upgrade_help() {
     cat <<'EOF'
 Usage: helm_upgrade -n <namespace> -c <chart> [-f <values.yaml>]... [-r <release>] [helm flags...]
@@ -73,8 +41,66 @@ Optional:
 
 Example:
   helm_package_push -c ./charts/myapp -a myacr -r platform/charts -v 1.2.3
+
+Uses az access-token auth (no Docker daemon required — works inside containers).
 EOF
 }
+
+# Login helm to ACR without Docker (az token + helm registry login).
+_helm_acr_registry_login() {
+    local acr_name="$1"
+    local acr_login_server token
+
+    acr_login_server=$(az acr show \
+        --name "$acr_name" \
+        --query loginServer \
+        -o tsv) || return 1
+
+    echo "Logging into ACR (token auth, no Docker required)..." >&2
+    token=$(az acr login --name "$acr_name" \
+        --expose-token \
+        --output tsv \
+        --query accessToken) || return 1
+
+    printf '%s' "$token" | helm registry login "$acr_login_server" \
+        --username 00000000-0000-0000-0000-000000000000 \
+        --password-stdin || return 1
+
+    echo "$acr_login_server"
+}
+
+
+# Local chart example:
+# helm_upgrade \
+#   -n dev \
+#   -c ./charts/myapp \
+#   -f values.yaml
+
+# OCI chart example:
+# helm_upgrade \
+#   -n dev \
+#   -c oci://my-registry.com/charts/myapp \
+#   -f values.yaml
+
+# OCI chart example with version:
+# helm_upgrade \
+#   -n dev \
+#   -c oci://my-registry.com/charts/myapp --version 1.0.0 \
+#   -f values.yaml
+
+# Remote Helm repository example:
+# helm_upgrade \
+#   -n prod \
+#   -c bitnami/nginx \
+#   -f values.yaml
+
+# It will also support other Helm flags automatically, for example:
+# --wait
+# --timeout 10m
+# --atomic
+# --create-namespace
+# --set image.tag=v1
+# --history-max 5
 
 helm_upgrade() {
     local namespace=""
@@ -272,8 +298,8 @@ helm_package_push() {
 
     mkdir -p "$destination"
 
-    echo "Logging into ACR..."
-    az acr login --name "$acr_name" || return 1
+    local acr_login_server
+    acr_login_server=$(_helm_acr_registry_login "$acr_name") || return 1
 
     local package_output
     local chart_package
@@ -295,12 +321,6 @@ helm_package_push() {
         echo "Error: Unable to locate packaged chart" >&2
         return 1
     fi
-
-    local acr_login_server
-    acr_login_server=$(az acr show \
-        --name "$acr_name" \
-        --query loginServer \
-        -o tsv) || return 1
 
     local oci_repo="oci://${acr_login_server}/${repository}"
 
