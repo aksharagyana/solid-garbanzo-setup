@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Prevent re-entry: /etc/bash.bashrc must never keep a source line for this script.
+if [[ -n "${__UTILS_BASHRC_SETUP_DONE:-}" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+export __UTILS_BASHRC_SETUP_DONE=1
+
 # Resolve utils dir from this script's location (works for any checkout path).
 # UTILS_ON_CONT overrides when utils is mounted elsewhere (e.g. in Docker).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +21,7 @@ echo "📁 Utils directory: $UTILS_DIR"
 
 source "${PROJECT_ENV_ON_CONT}"
 
+unregister_all_sh "$BASHRC" "${UTIL_EXCLUDES[@]}"
 register_all_sh "$BASHRC" "$UTILS_DIR" "${UTIL_EXCLUDES[@]}"
 source_all_sh "$UTILS_DIR" "${UTIL_EXCLUDES[@]}"
 
