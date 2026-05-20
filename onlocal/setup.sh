@@ -17,6 +17,5 @@ source "${UTILS_DIR}/source_all_sh.sh"
 # shellcheck source=/dev/null
 source "${ENV_SH}"
 
-# Load all onlocal helpers except this entrypoint and docker_env.sh
-# (docker_env.sh generates .env on source — run it explicitly when needed).
-source_all_sh "${ONLOCAL_DIR}" setup.sh docker_env.sh
+# Load all onlocal helpers except this entrypoint (setup.sh)
+source_all_sh "${ONLOCAL_DIR}" setup.sh
