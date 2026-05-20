@@ -7,21 +7,27 @@ Personal dev-environment setup: shell utilities for cloud/infra work, plus local
 | Path | Purpose |
 |------|---------|
 | `utils/` | Shared shell functions (Azure, Terraform, git, ngrok, etc.) — one topic per `*.sh` file |
-| `bashrc.sh` | Container bootstrap: registers and sources all `utils/*.sh` into `/etc/bash.bashrc` |
+| `utils/bashrc.sh` | Container bootstrap: registers and sources all `utils/*.sh` into `/etc/bash.bashrc` |
 | `onlocal/` | macOS-only helpers (Docker dev containers, DNS, ACR, AI tools) — source via `onlocal/setup.sh` |
 
 ## Shell utilities
 
-- Add a new utility by dropping a `*.sh` file in `utils/`. No edits to `bashrc.sh` are needed — it auto-discovers every `utils/*.sh`.
-- `bashrc.sh` resolves paths from its own location, so the repo can live anywhere on disk.
+- Add a new utility by dropping a `*.sh` file in `utils/`. No edits to `utils/bashrc.sh` are needed — it auto-discovers every `utils/*.sh`.
+- Add a new local helper by dropping a `*.sh` file in `onlocal/`. `onlocal/setup.sh` auto-discovers them (excludes `setup.sh` and `docker_env.sh`).
+- Both `utils/bashrc.sh` and `onlocal/setup.sh` share `utils/source_all_sh.sh` for directory-wide sourcing (`source_all_sh` on host, `register_all_sh` + `source_all_sh` in container).
+- `utils/bashrc.sh` resolves paths from its own location, so the repo can live anywhere on disk.
 - In Docker, set `UTILS_ON_CONT` when `utils/` is mounted outside the project root (see `onlocal/docker_env.sh`).
-- `PROJECT_ENV_ON_CONT` must point at the project env file when running `bashrc.sh` inside a container.
+- `PROJECT_ENV_ON_CONT` must point at the project env file when running `utils/bashrc.sh` inside a container.
 
 ## Local setup (macOS)
 
-Source `onlocal/setup.sh` to load Docker helpers (`dev_go`, `dev_python`, `dev_debian`, …), DNS, ACR, and related functions. That script expects a personal `~/code/env.sh` with machine-specific variables (`CODE_ON_MAC`, `UTILS_ON_MAC`, `GITHUB_TOKEN`, etc.).
+Source `onlocal/setup.sh` to load all local helpers (`dev_go`, `dev_python`, `dev_debian`, …). It expects a personal `~/code/env.sh` (override with `ENV_SH`) containing machine-specific variables (`CODE_ON_MAC`, `UTILS_ON_MAC`, `GITHUB_TOKEN`, etc.).
 
-Generate a Docker env file with `onlocal/docker_env.sh` (writes `.env` from selected environment variables).
+Generate a Docker env file explicitly when needed (not run on every setup):
+
+```bash
+source onlocal/docker_env.sh   # writes .env from selected env vars
+```
 
 ## graphify
 

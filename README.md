@@ -25,7 +25,7 @@ source onlocal/docker_env.sh   # writes .env from selected env vars
 Inside a dev container, run the bootstrap script to register and load all utilities:
 
 ```bash
-bash /path/to/solid-garbanzo-setup/bashrc.sh
+bash /path/to/solid-garbanzo-setup/utils/bashrc.sh
 ```
 
 Required environment variables:
@@ -40,7 +40,7 @@ Required environment variables:
 | Path | Purpose |
 |------|---------|
 | [`utils/`](utils/) | Shared shell functions — Azure, Terraform, git, ngrok, Vault, Helm, etc. |
-| [`bashrc.sh`](bashrc.sh) | Container bootstrap: auto-discovers and sources every `utils/*.sh` |
+| [`utils/bashrc.sh`](utils/bashrc.sh) | Container bootstrap: auto-discovers and sources every `utils/*.sh` |
 | [`onlocal/`](onlocal/) | macOS-only helpers — Docker dev containers, DNS, ACR, AI tools |
 
 ### Utility scripts (`utils/`)
@@ -49,7 +49,7 @@ Each file covers one topic. Current scripts:
 
 `az.sh` · `az_kv.sh` · `az_sa_blob.sh` · `gchr.sh` · `gitcmd.sh` · `helm.sh` · `ngrok.sh` · `ot.sh` · `pre-commit.sh` · `scp.sh` · `terragunt_setup.sh` · `tf.sh` · `util.sh` · `vault.sh`
 
-**Adding a new utility:** drop a `*.sh` file in `utils/`. No changes to `bashrc.sh` are needed — it picks up all `*.sh` files automatically (except `source_all_sh.sh`, the shared loader).
+**Adding a new utility:** drop a `*.sh` file in `utils/`. No changes to `utils/bashrc.sh` are needed — it picks up all `*.sh` files automatically (except `bashrc.sh` and `source_all_sh.sh`).
 
 **Adding a new local helper:** drop a `*.sh` file in `onlocal/`. `onlocal/setup.sh` picks it up automatically (excludes `setup.sh` and `docker_env.sh`).
 
