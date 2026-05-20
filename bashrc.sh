@@ -1,52 +1,14 @@
 #!/bin/bash
 
-source_all_sh() {
-    local DIR="${1:-.}"
-
-    # expand ~
-    DIR="${DIR/#\~/$HOME}"
-
-    if [[ ! -d "$DIR" ]]; then
-        echo "ERROR: Directory not found: $DIR"
-        return 1
-    fi
-
-    # track sourced files (global associative array)
-    if [[ -z "${__SOURCED_SH_FILES_INIT:-}" ]]; then
-        declare -gA __SOURCED_SH_FILES
-        __SOURCED_SH_FILES_INIT=1
-    fi
-
-    local file
-    shopt -s nullglob
-
-    for file in "$DIR"/*.sh; do
-        # normalize path
-        local abs_file
-        abs_file="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
-
-        # skip already sourced files
-        if [[ -n "${__SOURCED_SH_FILES[$abs_file]:-}" ]]; then
-            echo "Skipping already sourced: $abs_file"
-            continue
-        fi
-
-        echo "Sourcing: $abs_file"
-        # shellcheck source=/dev/null
-        source "$abs_file"
-
-        __SOURCED_SH_FILES["$abs_file"]=1
-    done
-
-    shopt -u nullglob
-}
-
 # Resolve project root from this script's location (works for any checkout path).
 # UTILS_ON_CONT overrides utils dir when utils is mounted elsewhere (e.g. in Docker).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}"
 UTILS_DIR="${UTILS_ON_CONT:-${PROJECT_ROOT}/utils}"
 BASHRC="/etc/bash.bashrc"
+
+# shellcheck source=/dev/null
+source "${UTILS_DIR}/source_all_sh.sh"
 
 echo "🔧 Updating $BASHRC and setting up utility scripts..."
 echo "📁 Utils directory: $UTILS_DIR"
@@ -63,6 +25,9 @@ fi
 
 for SCRIPT_PATH in "${util_scripts[@]}"; do
     script="$(basename "$SCRIPT_PATH")"
+
+    # Infrastructure helper — not a container utility.
+    [[ "$script" == "source_all_sh.sh" ]] && continue
 
     echo "⚙️  Processing $script..."
 
