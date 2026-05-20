@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UTILS_DIR="${UTILS_ON_CONT:-${SCRIPT_DIR}}"
 BASHRC="/etc/bash.bashrc"
 UTIL_EXCLUDES=(bashrc.sh source_all_sh.sh)
+CODE_DIR="${CODE_ON_CONT:-/code}"
 
 # shellcheck source=/dev/null
 source "${UTILS_DIR}/source_all_sh.sh"
@@ -24,6 +25,9 @@ source "${PROJECT_ENV_ON_CONT}"
 unregister_all_sh "$BASHRC" "${UTIL_EXCLUDES[@]}"
 register_all_sh "$BASHRC" "$UTILS_DIR" "${UTIL_EXCLUDES[@]}"
 source_all_sh "$UTILS_DIR" "${UTIL_EXCLUDES[@]}"
+
+source_all_sh "${CODE_DIR}/utils/env"
+source_all_sh "${CODE_DIR}/utils/scripts"
 
 # Source the updated bashrc
 echo "🔄 Reloading $BASHRC..."
