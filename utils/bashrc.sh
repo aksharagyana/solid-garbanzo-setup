@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Resolve project root from this script's location (works for any checkout path).
-# UTILS_ON_CONT overrides utils dir when utils is mounted elsewhere (e.g. in Docker).
+# Resolve utils dir from this script's location (works for any checkout path).
+# UTILS_ON_CONT overrides when utils is mounted elsewhere (e.g. in Docker).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${SCRIPT_DIR}"
-UTILS_DIR="${UTILS_ON_CONT:-${PROJECT_ROOT}/utils}"
+UTILS_DIR="${UTILS_ON_CONT:-${SCRIPT_DIR}}"
 BASHRC="/etc/bash.bashrc"
+UTIL_EXCLUDES=(bashrc.sh source_all_sh.sh)
 
 # shellcheck source=/dev/null
 source "${UTILS_DIR}/source_all_sh.sh"
@@ -15,36 +15,8 @@ echo "📁 Utils directory: $UTILS_DIR"
 
 source "${PROJECT_ENV_ON_CONT}"
 
-shopt -s nullglob
-util_scripts=("$UTILS_DIR"/*.sh)
-shopt -u nullglob
-
-if [[ ${#util_scripts[@]} -eq 0 ]]; then
-    echo "❌ Warning: No .sh files found in $UTILS_DIR"
-fi
-
-for SCRIPT_PATH in "${util_scripts[@]}"; do
-    script="$(basename "$SCRIPT_PATH")"
-
-    # Infrastructure helper — not a container utility.
-    [[ "$script" == "source_all_sh.sh" ]] && continue
-
-    echo "⚙️  Processing $script..."
-
-    # Make the script executable
-    chmod u+x "$SCRIPT_PATH"
-
-    # Add source line to bashrc if not already present
-    SOURCE_LINE="source $SCRIPT_PATH"
-    if ! grep -Fxq "$SOURCE_LINE" "$BASHRC"; then
-        echo "$SOURCE_LINE" >> "$BASHRC"
-        echo "✅ Added source line for $script"
-    else
-        echo "ℹ️  Source line for $script already exists in $BASHRC"
-    fi
-done
-
-source_all_sh "$UTILS_DIR"
+register_all_sh "$BASHRC" "$UTILS_DIR" "${UTIL_EXCLUDES[@]}"
+source_all_sh "$UTILS_DIR" "${UTIL_EXCLUDES[@]}"
 
 # Source the updated bashrc
 echo "🔄 Reloading $BASHRC..."
