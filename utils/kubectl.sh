@@ -51,6 +51,27 @@ _kubectl_collect_pods() {
     kubectl get pods -n "$namespace" --no-headers 2>/dev/null | awk "$awk_filter {print \$1, \$3}"
 }
 
+_kubectl_deployment_selector() {
+    local namespace="$1"
+    local deployment="$2"
+    local selector
+
+    if ! kubectl get deployment "$deployment" -n "$namespace" >/dev/null 2>&1; then
+        echo "Error: deployment '$deployment' not found in namespace '$namespace'" >&2
+        return 1
+    fi
+
+    selector=$(kubectl get deployment "$deployment" -n "$namespace" \
+        -o jsonpath='{range $k,$v := .spec.selector.matchLabels}{printf "%s=%s," $k $v}{end}' | sed 's/,$//')
+
+    if [[ -z "$selector" ]]; then
+        echo "Error: no pod selector on deployment '$deployment'" >&2
+        return 1
+    fi
+
+    printf '%s' "$selector"
+}
+
 _kubectl_delete_pods() {
     local namespace="$1"
     local description="$2"
@@ -494,14 +515,29 @@ kubectl_pod_watch() {
 
 kubectl_pod_logs_help() {
     cat <<'EOF'
-Usage: kubectl_pod_logs -n <namespace> -p <pod>
+Usage: kubectl_pod_logs -n <namespace> -p <pod> [-f] [--tail N] [--container NAME]
 
-Tail logs for a pod (-f).
+Fetch logs for a single pod.
+
+Required:
+  -n, --namespace       Namespace
+  -p, --pod             Pod name
+
+Optional:
+  -f, --follow          Stream logs (default: print and exit)
+  --tail <N>            Lines to show (default: 100 when not following)
+  --container <name>    Logs from a specific container only
+  -h, --help            Show this help
+
+Examples:
+  kubectl_pod_logs -n dev -p my-pod-abc123
+  kubectl_pod_logs -n dev -p my-pod-abc123 --tail 200
+  kubectl_pod_logs -n dev -p my-pod-abc123 --tail 200 -f
 EOF
 }
 
 kubectl_pod_logs() {
-    local namespace="" pod=""
+    local namespace="" pod="" follow=0 tail="" container=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -516,6 +552,20 @@ kubectl_pod_logs() {
                 pod="$2"
                 shift 2
                 ;;
+            -f|--follow)
+                follow=1
+                shift
+                ;;
+            --tail)
+                _kubectl_flag_value "$1" "${2:-}" || return 1
+                tail="$2"
+                shift 2
+                ;;
+            --container)
+                _kubectl_flag_value "$1" "${2:-}" || return 1
+                container="$2"
+                shift 2
+                ;;
             *)
                 echo "Unknown argument: $1" >&2
                 kubectl_pod_logs_help >&2
@@ -528,7 +578,115 @@ kubectl_pod_logs() {
     _kubectl_require_value "$namespace" "-n" || return 1
     _kubectl_require_value "$pod" "-p" || return 1
 
-    kubectl logs -f -n "$namespace" "$pod"
+    local -a log_args=(logs -n "$namespace" "$pod")
+
+    if [[ -n "$container" ]]; then
+        log_args+=(--container="$container")
+    fi
+
+    if [[ "$follow" -eq 1 ]]; then
+        [[ -n "$tail" ]] && log_args+=(--tail="$tail")
+        log_args+=(-f)
+    else
+        log_args+=(--tail="${tail:-100}")
+    fi
+
+    kubectl "${log_args[@]}"
+}
+
+kubectl_deployment_logs_help() {
+    cat <<'EOF'
+Usage: kubectl_deployment_logs -n <namespace> -d <deployment> [-f] [--tail N] [--container NAME]
+
+Fetch logs from all pods owned by a deployment (uses the deployment's label selector).
+
+Required:
+  -n, --namespace       Namespace
+  -d, --deployment      Deployment name
+
+Optional:
+  -f, --follow          Stream logs (default: print and exit)
+  --tail <N>            Lines per pod (default: 100 when not following)
+  --container <name>    Logs from a specific container only
+  -h, --help            Show this help
+
+Examples:
+  kubectl_deployment_logs -n dev -d api
+  kubectl_deployment_logs -n dev -d api -f
+  kubectl_deployment_logs -n dev -d api --tail 200 --container app
+EOF
+}
+
+kubectl_deployment_logs() {
+    local namespace="" deployment="" follow=0 tail="" container=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help) kubectl_deployment_logs_help; return 0 ;;
+            -n|--namespace)
+                _kubectl_flag_value "$1" "${2:-}" || return 1
+                namespace="$2"
+                shift 2
+                ;;
+            -d|--deployment)
+                _kubectl_flag_value "$1" "${2:-}" || return 1
+                deployment="$2"
+                shift 2
+                ;;
+            -f|--follow)
+                follow=1
+                shift
+                ;;
+            --tail)
+                _kubectl_flag_value "$1" "${2:-}" || return 1
+                tail="$2"
+                shift 2
+                ;;
+            --container)
+                _kubectl_flag_value "$1" "${2:-}" || return 1
+                container="$2"
+                shift 2
+                ;;
+            *)
+                echo "Unknown argument: $1" >&2
+                kubectl_deployment_logs_help >&2
+                return 1
+                ;;
+        esac
+    done
+
+    _kubectl_require || return 1
+    _kubectl_require_value "$namespace" "-n" || return 1
+    _kubectl_require_value "$deployment" "-d" || return 1
+
+    local selector
+    selector=$(_kubectl_deployment_selector "$namespace" "$deployment") || return 1
+
+    local pod_count
+    pod_count=$(kubectl get pods -n "$namespace" -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    if [[ "$pod_count" -eq 0 ]]; then
+        echo "No pods found for deployment '$deployment' in namespace '$namespace' (selector: $selector)" >&2
+        return 1
+    fi
+
+    echo "Deployment: $deployment (namespace: $namespace, selector: $selector, pods: $pod_count)"
+    kubectl get pods -n "$namespace" -l "$selector" --no-headers
+
+    local -a log_args=(logs -n "$namespace" -l "$selector" --all-containers=true --prefix=true)
+
+    if [[ -n "$container" ]]; then
+        log_args+=(--container="$container")
+    fi
+
+    if [[ "$follow" -eq 1 ]]; then
+        [[ -n "$tail" ]] && log_args+=(--tail="$tail")
+        log_args+=(-f)
+    else
+        log_args+=(--tail="${tail:-100}")
+    fi
+
+    kubectl "${log_args[@]}"
 }
 
 kubectl_pod_shell_help() {
@@ -1034,7 +1192,8 @@ Functions:
   kubectl_top_pods [-n <ns>]
   kubectl_top_nodes
   kubectl_pod_watch [-n <ns>]
-  kubectl_pod_logs -n <ns> -p <pod>
+  kubectl_pod_logs -n <ns> -p <pod> [-f] [--tail N]
+  kubectl_deployment_logs -n <ns> -d <deployment> [-f] [--tail N]
   kubectl_pod_shell -n <ns> -p <pod>
   kubectl_pod_bash -n <ns> -p <pod>
   kubectl_describe_pod -n <ns> -p <pod>
