@@ -709,3 +709,109 @@ git_revert_last_commit(){
   
   echo "Done! The last commit has been undone and pushed."
 }
+
+git_merge() {
+    local source_branch=""
+    local target_branch=""
+
+    usage() {
+        cat <<EOF
+Usage:
+  git_merge [-s <source_branch>] [-t <target_branch>]
+
+Merge source into target (checkout target, pull, merge source).
+
+Options:
+  -s    Source branch to merge from (default: repo default branch)
+  -t    Target branch to merge into (default: current branch)
+  -h    Show this help
+
+Examples:
+  git_merge                                    # merge main into current branch
+  git_merge -s main -t feature/my-branch
+  git_merge -s develop                         # merge develop into current branch
+EOF
+    }
+
+    local OPTIND
+    OPTIND=1
+    while getopts ":s:t:h" opt; do
+        case "${opt}" in
+            s) source_branch="${OPTARG}" ;;
+            t) target_branch="${OPTARG}" ;;
+            h)
+                usage
+                return 0
+                ;;
+            *)
+                usage
+                return 1
+                ;;
+        esac
+    done
+
+    git rev-parse --is-inside-work-tree &>/dev/null || {
+        echo "ERROR: Not a git repository." >&2
+        return 1
+    }
+
+    if [[ -z "${target_branch}" ]]; then
+        target_branch=$(git branch --show-current 2>/dev/null)
+        if [[ -z "${target_branch}" ]]; then
+            echo "ERROR: Could not determine current branch (detached HEAD?). Use -t." >&2
+            return 1
+        fi
+    fi
+
+    echo "Fetching latest changes..."
+    git fetch --all --prune || return 1
+
+    if [[ -z "${source_branch}" ]]; then
+        source_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+        if [[ -z "${source_branch}" ]]; then
+            local candidate
+            for candidate in main master; do
+                if git rev-parse --verify "origin/${candidate}" >/dev/null 2>&1; then
+                    source_branch="${candidate}"
+                    break
+                fi
+            done
+        fi
+        if [[ -z "${source_branch}" ]]; then
+            echo "ERROR: Could not detect default branch. Use -s." >&2
+            return 1
+        fi
+    fi
+
+    if [[ "${source_branch}" == "${target_branch}" ]]; then
+        echo "ERROR: Source and target are both '${source_branch}'; nothing to merge." >&2
+        return 1
+    fi
+
+    echo "Source: ${source_branch}"
+    echo "Target: ${target_branch}"
+    echo "Checking out target branch: ${target_branch}"
+    git checkout "${target_branch}" || return 1
+
+    echo "Pulling latest changes..."
+    git pull origin "${target_branch}" || return 1
+
+    echo "Merging ${source_branch} into ${target_branch}..."
+
+    GIT_EDITOR=true git merge \
+        --no-ff \
+        --no-edit \
+        "${source_branch}"
+
+    merge_rc=$?
+
+    if [[ ${merge_rc} -ne 0 ]]; then
+        echo "ERROR: Merge failed."
+        echo "If this is a conflict, resolve it manually and run
+        :"
+        echo "  git merge --abort"
+        return ${merge_rc}
+    fi
+
+    echo "Merge completed successfully."
+}
