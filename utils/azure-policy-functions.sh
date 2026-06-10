@@ -12,18 +12,98 @@ function _parse_args() {
     FILE_PATH=""
     SCOPE=""
     OUTPUT_FILE=""
+    TARGET_DIR=""
+    POLICY_NAME=""
+    DISPLAY_NAME=""
+    RULE_FILE=""
+    PARAMS_FILE=""
+    MANAGEMENT_GROUP=""
 
-    while getopts "p:a:f:s:o:h" opt; do
+    # getopts uses global OPTIND; reset so repeat calls in the same shell work.
+    OPTIND=1
+
+    while getopts "p:a:f:s:o:d:hn:D:r:u:g:" opt; do
         case $opt in
             p) POLICY_ID="$OPTARG" ;;
             a) ASSIGNMENT_ID="$OPTARG" ;;
             f) FILE_PATH="$OPTARG" ;;
             s) SCOPE="$OPTARG" ;;
             o) OUTPUT_FILE="$OPTARG" ;;
+            d) TARGET_DIR="$OPTARG" ;;
+            n) POLICY_NAME="$OPTARG" ;;
+            D) DISPLAY_NAME="$OPTARG" ;;
+            r) RULE_FILE="$OPTARG" ;;
+            u) PARAMS_FILE="$OPTARG" ;;
+            g) MANAGEMENT_GROUP="$OPTARG" ;;
             h) _show_help "$func_name"; exit 0 ;;
             *) echo "Invalid option"; _show_help "$func_name"; exit 1 ;;
         esac
     done
+}
+
+# ARM IDs are case-insensitive; bash =~ is not unless nocasematch is on.
+_with_nocasematch() {
+    local _restore=0
+    shopt -q nocasematch || { shopt -s nocasematch; _restore=1; }
+    "$@"
+    local _rc=$?
+    ((_restore)) && shopt -u nocasematch
+    return "$_rc"
+}
+
+_canonicalize_management_group_scope() {
+    local mg="$1"
+    echo "/providers/Microsoft.Management/managementGroups/${mg}"
+}
+
+# Parse full ARM resource ID (or short name) into az CLI flags.
+_parse_policy_definition_id() {
+    local id="$1"
+    POLICY_DEF_NAME=""
+    POLICY_DEF_MG=""
+    POLICY_DEF_SUB=""
+
+    _with_nocasematch _parse_policy_definition_id_impl "$id"
+}
+
+_parse_policy_definition_id_impl() {
+    local id="$1"
+
+    if [[ "$id" =~ /managementGroups/([^/]+)/providers/Microsoft\.Authorization/policyDefinitions/([^/]+)$ ]]; then
+        POLICY_DEF_MG="${BASH_REMATCH[1]}"
+        POLICY_DEF_NAME="${BASH_REMATCH[2]}"
+    elif [[ "$id" =~ /subscriptions/([^/]+)/providers/Microsoft\.Authorization/policyDefinitions/([^/]+)$ ]]; then
+        POLICY_DEF_SUB="${BASH_REMATCH[1]}"
+        POLICY_DEF_NAME="${BASH_REMATCH[2]}"
+    elif [[ "$id" =~ ^/providers/Microsoft\.Authorization/policyDefinitions/([^/]+)$ ]]; then
+        POLICY_DEF_NAME="${BASH_REMATCH[1]}"
+    else
+        POLICY_DEF_NAME="${id##*/}"
+        POLICY_DEF_NAME="${POLICY_DEF_NAME%.json}"
+    fi
+}
+
+_parse_policy_assignment_id() {
+    local id="$1"
+    ASSIGN_NAME=""
+    ASSIGN_SCOPE=""
+
+    _with_nocasematch _parse_policy_assignment_id_impl "$id"
+}
+
+_parse_policy_assignment_id_impl() {
+    local id="$1"
+
+    if [[ "$id" =~ ^(.+)/providers/Microsoft\.Authorization/policyAssignments/([^/]+)$ ]]; then
+        ASSIGN_SCOPE="${BASH_REMATCH[1]}"
+        ASSIGN_NAME="${BASH_REMATCH[2]}"
+        if [[ "$ASSIGN_SCOPE" =~ ^/providers/Microsoft\.Management/managementGroups/([^/]+)$ ]]; then
+            ASSIGN_SCOPE="$(_canonicalize_management_group_scope "${BASH_REMATCH[1]}")"
+        fi
+    else
+        ASSIGN_NAME="${id##*/}"
+        ASSIGN_NAME="${ASSIGN_NAME%.json}"
+    fi
 }
 
 function _show_help() {
@@ -35,14 +115,19 @@ function _show_help() {
             echo "  -o  Output JSON file path (optional)"
             ;;
         az_policy_assignment_download)
-            echo "Usage: az_policy_assignment_download -a <assignment_id> [-o <output_file>]"
-            echo "  -a  Policy Assignment ID or Name"
+            echo "Usage: az_policy_assignment_download -a <assignment_arm_id> [-o <output_file>]"
+            echo "  -a  Full policy assignment ARM resource ID (required for MG/subscription scope)"
             echo "  -o  Output JSON file path (optional)"
+            echo "  Note: display name is not supported; use the assignment name from the ARM id."
             ;;
         az_policy_definition_deploy)
-            echo "Usage: az_policy_definition_deploy -f <json_file> [-s <scope>]"
-            echo "  -f  Local policy definition JSON file path"
-            echo "  -s  Scope (Management Group ID or Subscription ID) - optional"
+            echo "Usage: az_policy_definition_deploy -n <name> -D <display_name> -r <rule.json> (-g <mg> | -s <subscription>) [-u <parameters.json>]"
+            echo "  -n  Policy definition name (required)"
+            echo "  -D  Policy definition display name (required)"
+            echo "  -r  Policy rule JSON file (required)"
+            echo "  -u  Policy parameters JSON file (optional)"
+            echo "  -g  Management group id or name (required if -s not set)"
+            echo "  -s  Subscription id or name (required if -g not set)"
             ;;
         az_policy_assignment_deploy)
             echo "Usage: az_policy_assignment_deploy -f <json_file> [-s <scope>]"
@@ -58,6 +143,11 @@ function _show_help() {
             echo "Usage: az_policy_assignment_delete -a <assignment_id> [-s <scope>]"
             echo "  -a  Policy Assignment ID or Name"
             echo "  -s  Scope - optional"
+            ;;
+        az_policy_prepare_artifacts)
+            echo "Usage: az_policy_prepare_artifacts -f <policy_definition.json> -d <target_directory>"
+            echo "  -f  Local Azure Policy Definition JSON (from download or export)"
+            echo "  -d  Base directory for policyrule/ and parameters/ subfolders"
             ;;
         *)
             echo "Unknown function"
@@ -77,10 +167,23 @@ az_policy_definition_download() {
         return 1
     fi
 
-    local output="${OUTPUT_FILE:-${POLICY_ID##*/}.json}"
+    _parse_policy_definition_id "$POLICY_ID"
+
+    local output="${OUTPUT_FILE:-${POLICY_DEF_NAME}.json}"
+    local out_dir
+    out_dir=$(dirname "$output")
+    [[ "$out_dir" != "." && -n "$out_dir" ]] && mkdir -p "$out_dir"
+
+    local az_args=(--name "$POLICY_DEF_NAME")
+    [[ -n "$POLICY_DEF_MG" ]] && az_args+=(--management-group "$POLICY_DEF_MG")
+    [[ -n "$POLICY_DEF_SUB" ]] && az_args+=(--subscription "$POLICY_DEF_SUB")
 
     echo "Downloading policy definition: $POLICY_ID"
-    az policy definition show --id "$POLICY_ID" --output json > "$output"
+    if ! az policy definition show "${az_args[@]}" --output json > "$output"; then
+        echo "Error: failed to download policy definition (name=$POLICY_DEF_NAME)"
+        rm -f "$output"
+        return 1
+    fi
     echo "Saved to: $output"
 }
 
@@ -96,10 +199,22 @@ az_policy_assignment_download() {
         return 1
     fi
 
-    local output="${OUTPUT_FILE:-${ASSIGNMENT_ID##*/}.json}"
+    _parse_policy_assignment_id "$ASSIGNMENT_ID"
+
+    local output="${OUTPUT_FILE:-${ASSIGN_NAME}.json}"
+    local out_dir
+    out_dir=$(dirname "$output")
+    [[ "$out_dir" != "." && -n "$out_dir" ]] && mkdir -p "$out_dir"
+
+    local az_args=(--name "$ASSIGN_NAME")
+    [[ -n "$ASSIGN_SCOPE" ]] && az_args+=(--scope "$ASSIGN_SCOPE")
 
     echo "Downloading policy assignment: $ASSIGNMENT_ID"
-    az policy assignment show --id "$ASSIGNMENT_ID" --output json > "$output"
+    if ! az policy assignment show "${az_args[@]}" --output json > "$output"; then
+        echo "Error: failed to download policy assignment (name=$ASSIGN_NAME)"
+        rm -f "$output"
+        return 1
+    fi
     echo "Saved to: $output"
 }
 
@@ -109,43 +224,100 @@ az_policy_assignment_download() {
 az_policy_definition_deploy() {
     _parse_args "${FUNCNAME[0]}" "$@"
 
-    if [[ -z "$FILE_PATH" ]]; then
-        echo "Error: -f <json_file> is required"
+    if [[ -z "$POLICY_NAME" ]]; then
+        echo "Error: -n <name> is required"
         _show_help "${FUNCNAME[0]}"
         return 1
     fi
 
-    if [[ ! -f "$FILE_PATH" ]]; then
-        echo "Error: File not found: $FILE_PATH"
+    if [[ -z "$DISPLAY_NAME" ]]; then
+        echo "Error: -D <display_name> is required"
+        _show_help "${FUNCNAME[0]}"
         return 1
     fi
 
-    local name
-    name=$(jq -r '.name // .properties.name // empty' "$FILE_PATH")
-    [[ -z "$name" ]] && name=$(basename "$FILE_PATH" .json)
-
-    echo "Deploying policy definition: $name"
-
-    local scope_arg=""
-    [[ -n "$SCOPE" ]] && scope_arg="--management-group $SCOPE"
-
-    if az policy definition show --name "$name" $scope_arg >/dev/null 2>&1; then
-        echo "Policy exists → Updating..."
-        az policy definition update \
-            --name "$name" \
-            $scope_arg \
-            --rules "@$FILE_PATH" \
-            --output none
-    else
-        echo "Policy does not exist → Creating..."
-        az policy definition create \
-            --name "$name" \
-            $scope_arg \
-            --rules "@$FILE_PATH" \
-            --output none
+    if [[ -z "$RULE_FILE" ]]; then
+        echo "Error: -r <policy_rule.json> is required"
+        _show_help "${FUNCNAME[0]}"
+        return 1
     fi
 
-    echo "Policy definition '$name' deployed successfully."
+    if [[ -z "$MANAGEMENT_GROUP" && -z "$SCOPE" ]]; then
+        echo "Error: specify exactly one scope: -g <management_group> or -s <subscription>"
+        _show_help "${FUNCNAME[0]}"
+        return 1
+    fi
+
+    if [[ -n "$MANAGEMENT_GROUP" && -n "$SCOPE" ]]; then
+        echo "Error: use only one of -g <management_group> or -s <subscription>, not both"
+        _show_help "${FUNCNAME[0]}"
+        return 1
+    fi
+
+    if [[ ! -f "$RULE_FILE" ]]; then
+        echo "Error: Policy rule file not found: $RULE_FILE"
+        return 1
+    fi
+
+    if [[ -n "$PARAMS_FILE" && ! -f "$PARAMS_FILE" ]]; then
+        echo "Error: Parameters file not found: $PARAMS_FILE"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "Error: jq is required but not installed"
+        return 1
+    fi
+
+    if ! jq empty "$RULE_FILE" 2>/dev/null; then
+        echo "Error: Invalid JSON in policy rule file: $RULE_FILE"
+        return 1
+    fi
+
+    if [[ -n "$PARAMS_FILE" ]] && ! jq empty "$PARAMS_FILE" 2>/dev/null; then
+        echo "Error: Invalid JSON in parameters file: $PARAMS_FILE"
+        return 1
+    fi
+
+    local scope_args=()
+    if [[ -n "$MANAGEMENT_GROUP" ]]; then
+        scope_args=(--management-group "$MANAGEMENT_GROUP")
+        echo "Deploying policy definition: $POLICY_NAME (management group: $MANAGEMENT_GROUP)"
+    else
+        scope_args=(--subscription "$SCOPE")
+        echo "Deploying policy definition: $POLICY_NAME (subscription: $SCOPE)"
+    fi
+
+    local az_args=(
+        --name "$POLICY_NAME"
+        --display-name "$DISPLAY_NAME"
+        --rules "@${RULE_FILE}"
+    )
+    [[ -n "$PARAMS_FILE" ]] && az_args+=(--params "@${PARAMS_FILE}")
+
+    if az policy definition show --name "$POLICY_NAME" "${scope_args[@]}" >/dev/null 2>&1; then
+        echo "Policy exists → Updating..."
+        if ! az policy definition update "${scope_args[@]}" "${az_args[@]}" --output none; then
+            echo "Error: failed to update policy definition '$POLICY_NAME'"
+            return 1
+        fi
+    else
+        echo "Policy does not exist → Creating..."
+        if ! az policy definition create "${scope_args[@]}" "${az_args[@]}" --output none; then
+            echo "Error: failed to create policy definition '$POLICY_NAME'"
+            return 1
+        fi
+    fi
+
+    local policy_id
+    policy_id=$(az policy definition show --name "$POLICY_NAME" "${scope_args[@]}" --query id -o tsv 2>/dev/null) || true
+    if [[ -z "$policy_id" ]]; then
+        echo "Error: deployed but could not retrieve policy definition id"
+        return 1
+    fi
+
+    echo "Policy definition id: $policy_id"
+    echo "Policy definition '$POLICY_NAME' deployed successfully."
 }
 
 # ================================================
@@ -194,7 +366,78 @@ az_policy_assignment_deploy() {
 }
 
 # ================================================
-# 5. Delete Policy Definition
+# 5. Prepare deployment artifacts from a policy definition JSON
+# ================================================
+az_policy_prepare_artifacts() {
+    _parse_args "${FUNCNAME[0]}" "$@"
+
+    if [[ -z "$FILE_PATH" ]]; then
+        echo "Error: -f <policy_definition.json> is required"
+        _show_help "${FUNCNAME[0]}"
+        return 1
+    fi
+
+    if [[ -z "$TARGET_DIR" ]]; then
+        echo "Error: -d <target_directory> is required"
+        _show_help "${FUNCNAME[0]}"
+        return 1
+    fi
+
+    if [[ ! -f "$FILE_PATH" ]]; then
+        echo "Error: File not found: $FILE_PATH"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "Error: jq is required but not installed"
+        return 1
+    fi
+
+    if ! jq empty "$FILE_PATH" 2>/dev/null; then
+        echo "Error: Invalid JSON: $FILE_PATH"
+        return 1
+    fi
+
+    if ! jq -e '.policyRule // .properties.policyRule' "$FILE_PATH" >/dev/null 2>&1; then
+        echo "Error: policyRule not found in $FILE_PATH (expected .policyRule or .properties.policyRule)"
+        return 1
+    fi
+
+    local stem rule_dir params_dir rule_file params_file
+    stem=$(basename "$FILE_PATH" .json)
+    rule_dir="${TARGET_DIR}/policyrule"
+    params_dir="${TARGET_DIR}/parameters"
+    rule_file="${rule_dir}/${stem}-pr.json"
+    params_file="${params_dir}/${stem}-parameters.json"
+
+    mkdir -p "$rule_dir" "$params_dir"
+
+    echo "Preparing artifacts from: $FILE_PATH"
+    echo "Target directory: $TARGET_DIR"
+
+    if ! jq '.policyRule // .properties.policyRule' "$FILE_PATH" > "$rule_file"; then
+        echo "Error: failed to write policy rule file: $rule_file"
+        rm -f "$rule_file"
+        return 1
+    fi
+    echo "  Policy rule:  $rule_file"
+
+    if jq -e '(.parameters // .properties.parameters) != null' "$FILE_PATH" >/dev/null 2>&1; then
+        if ! jq '.parameters // .properties.parameters' "$FILE_PATH" > "$params_file"; then
+            echo "Error: failed to write parameters file: $params_file"
+            rm -f "$params_file"
+            return 1
+        fi
+        echo "  Parameters:   $params_file"
+    else
+        echo "  Parameters:   (none in source — skipped)"
+    fi
+
+    echo "Artifacts prepared successfully."
+}
+
+# ================================================
+# 6. Delete Policy Definition
 # ================================================
 az_policy_definition_delete() {
     _parse_args "${FUNCNAME[0]}" "$@"
@@ -205,16 +448,24 @@ az_policy_definition_delete() {
         return 1
     fi
 
-    echo "Deleting policy definition: $POLICY_ID"
-    local scope_arg=""
-    [[ -n "$SCOPE" ]] && scope_arg="--management-group $SCOPE"
+    _parse_policy_definition_id "$POLICY_ID"
 
-    az policy definition delete --name "$POLICY_ID" $scope_arg --yes || \
+    echo "Deleting policy definition: $POLICY_ID"
+    local az_args=(--name "$POLICY_DEF_NAME")
+    if [[ -n "$SCOPE" ]]; then
+        az_args+=(--management-group "$SCOPE")
+    elif [[ -n "$POLICY_DEF_MG" ]]; then
+        az_args+=(--management-group "$POLICY_DEF_MG")
+    elif [[ -n "$POLICY_DEF_SUB" ]]; then
+        az_args+=(--subscription "$POLICY_DEF_SUB")
+    fi
+
+    az policy definition delete "${az_args[@]}" --yes || \
         echo "Warning: Delete command returned non-zero (may already be deleted)."
 }
 
 # ================================================
-# 6. Delete Policy Assignment
+# 7. Delete Policy Assignment
 # ================================================
 az_policy_assignment_delete() {
     _parse_args "${FUNCNAME[0]}" "$@"
@@ -225,11 +476,17 @@ az_policy_assignment_delete() {
         return 1
     fi
 
-    echo "Deleting policy assignment: $ASSIGNMENT_ID"
-    local scope_arg=""
-    [[ -n "$SCOPE" ]] && scope_arg="--scope $SCOPE"
+    _parse_policy_assignment_id "$ASSIGNMENT_ID"
 
-    az policy assignment delete --name "$ASSIGNMENT_ID" $scope_arg --yes || \
+    echo "Deleting policy assignment: $ASSIGNMENT_ID"
+    local az_args=(--name "$ASSIGN_NAME")
+    if [[ -n "$SCOPE" ]]; then
+        az_args+=(--scope "$SCOPE")
+    elif [[ -n "$ASSIGN_SCOPE" ]]; then
+        az_args+=(--scope "$ASSIGN_SCOPE")
+    fi
+
+    az policy assignment delete "${az_args[@]}" --yes || \
         echo "Warning: Delete command returned non-zero (may already be deleted)."
 }
 
@@ -246,6 +503,7 @@ az_policy_help() {
     echo "  az_policy_assignment_deploy     - Create/Update policy assignment"
     echo "  az_policy_definition_delete     - Delete policy definition"
     echo "  az_policy_assignment_delete     - Delete policy assignment"
+    echo "  az_policy_prepare_artifacts     - Split definition into policyrule/ and parameters/"
     echo "  az_policy_help                  - Show this help"
     echo ""
     echo "Use -h with any function for detailed usage."
