@@ -6,19 +6,299 @@ export TENV_AUTO_INSTALL="${TENV_AUTO_INSTALL:-true}"
 # }
 
 function tfv() {
-     tfi
+    #  tfi
      terraform fmt -recursive 
      terraform validate
 }
 
-function tfi() {
-     terraform init
+# Usage:
+#   tfi [-d directory] [-b backend-config]...
+#   tfi -backend-config=backend_config/nonlive.conf
+#   tfi -d ./infra -b backend_config/nonlive.conf -- -upgrade
+tfi() {
+    local TF_DIR="$(pwd)"
+    local BACKEND_CONFIGS=()
+    local PASSTHROUGH=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -d)
+                [[ -n "${2:-}" ]] || { echo "Error: -d requires a directory." >&2; return 1; }
+                TF_DIR="$2"
+                shift 2
+                ;;
+            -b|-backend-config)
+                [[ -n "${2:-}" ]] || { echo "Error: $1 requires a backend config path." >&2; return 1; }
+                BACKEND_CONFIGS+=("$2")
+                shift 2
+                ;;
+            -backend-config=*)
+                BACKEND_CONFIGS+=("${1#-backend-config=}")
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: tfi [-d directory] [-b backend-config | -backend-config=path]... [-- terraform-init-args...]"
+                echo "  -d  Terraform working directory (default: current directory)"
+                echo "  -b  Backend config file (repeatable; also accepts -backend-config=path)"
+                echo "  --  Pass remaining args through to terraform init (e.g. -upgrade, -reconfigure)"
+                return 0
+                ;;
+            --)
+                shift
+                PASSTHROUGH+=("$@")
+                break
+                ;;
+            *)
+                PASSTHROUGH+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ! -d "$TF_DIR" ]]; then
+        echo "Error: Directory '$TF_DIR' does not exist." >&2
+        return 1
+    fi
+
+    _tf_ensure_ready "$TF_DIR" || return 1
+
+    local ORIGINAL_DIR="$(pwd)"
+    cd "$TF_DIR" || {
+        echo "Error: Could not change to directory $TF_DIR" >&2
+        return 1
+    }
+
+    local INIT_OPTS=()
+    local cfg
+    for cfg in "${BACKEND_CONFIGS[@]}"; do
+        if [[ -f "$cfg" ]]; then
+            INIT_OPTS+=("-backend-config=$cfg")
+        else
+            echo "Warning: Backend config '$cfg' not found in $TF_DIR" >&2
+            INIT_OPTS+=("-backend-config=$cfg")
+        fi
+    done
+
+    echo "=== Running terraform init in: $TF_DIR ==="
+    if [[ ${#INIT_OPTS[@]} -gt 0 || ${#PASSTHROUGH[@]} -gt 0 ]]; then
+        echo "Options: ${INIT_OPTS[*]} ${PASSTHROUGH[*]}"
+    fi
+
+    terraform init "${INIT_OPTS[@]}" "${PASSTHROUGH[@]}"
+    local code=$?
+
+    cd "$ORIGINAL_DIR" >/dev/null
+    return $code
 }
 
 
-function tfplan() {
-     tfv
-     terraform plan
+# Usage:
+#   tfplan [-d directory] [-v var-file]... [-t target]... [extra terraform plan args...]
+#   tfplan -v var1.tfvars -out=tf_plan.out
+#   tfplan -d ./infra -v env/nonlive.tfvars -t module.vnet -out=plans/nonlive.out
+tfplan() {
+    local TF_DIR="$(pwd)"
+    local VAR_FILES=()
+    local TARGETS=()
+    local PASSTHROUGH=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -d)
+                [[ -n "${2:-}" ]] || { echo "Error: -d requires a directory." >&2; return 1; }
+                TF_DIR="$2"
+                shift 2
+                ;;
+            -v|-var-file)
+                [[ -n "${2:-}" ]] || { echo "Error: $1 requires a var file path." >&2; return 1; }
+                VAR_FILES+=("$2")
+                shift 2
+                ;;
+            -var-file=*)
+                VAR_FILES+=("${1#-var-file=}")
+                shift
+                ;;
+            -t|-target)
+                [[ -n "${2:-}" ]] || { echo "Error: $1 requires a target." >&2; return 1; }
+                TARGETS+=("$2")
+                shift 2
+                ;;
+            -target=*)
+                TARGETS+=("${1#-target=}")
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: tfplan [-d directory] [-v var-file]... [-t target]... [terraform-plan-args...]"
+                echo "  -d  Terraform working directory (default: current directory)"
+                echo "  -v  Variable file (.tfvars) - can be used multiple times"
+                echo "  -t  Target resource or module - can be used multiple times"
+                echo "  Any other args are passed to terraform plan (e.g. -out=tf_plan.out, -destroy)"
+                return 0
+                ;;
+            --)
+                shift
+                PASSTHROUGH+=("$@")
+                break
+                ;;
+            *)
+                PASSTHROUGH+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ! -d "$TF_DIR" ]]; then
+        echo "Error: Directory '$TF_DIR' does not exist." >&2
+        return 1
+    fi
+
+    local TF_OPTS=()
+    local VAR_FILE TARGET
+    for VAR_FILE in "${VAR_FILES[@]}"; do
+        if [[ -f "$VAR_FILE" ]]; then
+            TF_OPTS+=("-var-file=$VAR_FILE")
+        else
+            echo "Warning: Variable file '$VAR_FILE' does not exist, skipping." >&2
+        fi
+    done
+
+    for TARGET in "${TARGETS[@]}"; do
+        TF_OPTS+=("-target=$TARGET")
+    done
+
+    _tf_ensure_ready "$TF_DIR" || return 1
+
+    local ORIGINAL_DIR="$(pwd)"
+    cd "$TF_DIR" || {
+        echo "Error: Could not change to directory $TF_DIR" >&2
+        return 1
+    }
+
+    tfv || {
+        cd "$ORIGINAL_DIR" >/dev/null
+        return 1
+    }
+
+    echo "=== Running terraform plan in: $TF_DIR ==="
+    if [[ ${#TF_OPTS[@]} -gt 0 || ${#PASSTHROUGH[@]} -gt 0 ]]; then
+        echo "Options: ${TF_OPTS[*]} ${PASSTHROUGH[*]}"
+    else
+        echo "Options: (none)"
+    fi
+
+    terraform plan "${TF_OPTS[@]}" "${PASSTHROUGH[@]}"
+    local code=$?
+
+    cd "$ORIGINAL_DIR" >/dev/null
+    return $code
+}
+
+_tf_pager() {
+    if [[ -n "${PAGER:-}" ]]; then
+        $PAGER
+    elif command -v less >/dev/null 2>&1; then
+        less -R
+    elif command -v more >/dev/null 2>&1; then
+        more
+    else
+        cat
+    fi
+}
+
+# Usage:
+#   tfshow [plan-file] [-d directory] [-e] [--no-pager] [terraform show args...]
+#   tfshow                         # page through tf_plan.out in less
+#   tfshow -e tf_plan.out          # open plan in vi ($EDITOR)
+#   tfshow -json tf_plan.out       # page JSON output
+tfshow() {
+    local TF_DIR="$(pwd)"
+    local PLAN_FILE="tf_plan.out"
+    local PASSTHROUGH=()
+    local USE_EDITOR=false
+    local NO_PAGER=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -d)
+                [[ -n "${2:-}" ]] || { echo "Error: -d requires a directory." >&2; return 1; }
+                TF_DIR="$2"
+                shift 2
+                ;;
+            -e|--edit)
+                USE_EDITOR=true
+                shift
+                ;;
+            --no-pager)
+                NO_PAGER=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: tfshow [plan-file] [-d directory] [-e] [--no-pager] [terraform-show-args...]"
+                echo "  plan-file   Saved plan to display (default: tf_plan.out)"
+                echo "  -d          Terraform working directory (default: current directory)"
+                echo "  -e          Open in \$EDITOR (default: vi) instead of paging"
+                echo "  --no-pager  Print full output without less/vi"
+                echo "  Other args are passed to terraform show (e.g. -json, -no-color)"
+                return 0
+                ;;
+            --)
+                shift
+                PASSTHROUGH+=("$@")
+                break
+                ;;
+            -*)
+                PASSTHROUGH+=("$1")
+                shift
+                ;;
+            *)
+                PLAN_FILE="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ! -d "$TF_DIR" ]]; then
+        echo "Error: Directory '$TF_DIR' does not exist." >&2
+        return 1
+    fi
+
+    _tf_ensure_ready "$TF_DIR" || return 1
+
+    local ORIGINAL_DIR="$(pwd)"
+    cd "$TF_DIR" || {
+        echo "Error: Could not change to directory $TF_DIR" >&2
+        return 1
+    }
+
+    if [[ ! -f "$PLAN_FILE" ]]; then
+        echo "Error: Plan file '$PLAN_FILE' not found in $TF_DIR" >&2
+        cd "$ORIGINAL_DIR" >/dev/null
+        return 1
+    fi
+
+    local code=0
+    local tmp editor
+
+    if [[ "$USE_EDITOR" == true ]]; then
+        tmp="$(mktemp "${TMPDIR:-/tmp}/tfshow.XXXXXX")"
+        terraform show "${PASSTHROUGH[@]}" "$PLAN_FILE" > "$tmp" || code=$?
+        if [[ $code -eq 0 ]]; then
+            editor="${EDITOR:-${VISUAL:-vi}}"
+            "$editor" "$tmp"
+            code=$?
+        fi
+        rm -f "$tmp"
+    elif [[ "$NO_PAGER" == true ]] || [[ ! -t 1 ]]; then
+        terraform show "${PASSTHROUGH[@]}" "$PLAN_FILE"
+        code=$?
+    else
+        echo "=== Showing plan: $PLAN_FILE (less: q=quit, / = search) ===" >&2
+        terraform show "${PASSTHROUGH[@]}" "$PLAN_FILE" | _tf_pager
+        code=${PIPESTATUS[0]}
+    fi
+
+    cd "$ORIGINAL_DIR" >/dev/null
+    return $code
 }
 
 
@@ -288,6 +568,35 @@ WRAPPER
     chmod +x "$proxy"
 }
 
+_tf_install_version() {
+    local version="$1"
+
+    if ! tenv terraform list | grep -q "${version}"; then
+        echo "[*] Installing Terraform ${version}..."
+        tenv terraform install "${version}" || return 1
+    fi
+}
+
+_tf_ensure_ready() {
+    local dir="${1:-$PWD}"
+
+    if ! command -v tenv >/dev/null 2>&1; then
+        echo "Error: tenv not found in PATH." >&2
+        return 1
+    fi
+
+    _tf_ensure_terraform || return 1
+    export PATH="$(tenv update-path)"
+
+    local version
+    version="$(_tf_resolve_version "$dir")" || {
+        echo "Error: No Terraform version found. Add .terraform-version or run: tfsetup -v <version>" >&2
+        return 1
+    }
+
+    _tf_install_version "$version" || return 1
+}
+
 tfsetup() {
     local version=""
     
@@ -313,23 +622,13 @@ tfsetup() {
         return 1
     fi
 
-    if ! command -v tenv >/dev/null 2>&1; then
-        echo "Error: tenv not found in PATH." >&2
-        return 1
-    fi
-
     echo "[-] Setting up Terraform v${version} via tenv..."
 
-    # Install the version if it is not already cached
-    if ! tenv terraform list | grep -q "${version}"; then
-        echo "[*] Version ${version} not found locally. Installing..."
-        tenv terraform install "${version}" || return 1
-    fi
+    _tf_install_version "$version" || return 1
 
     # Select the version globally (writes ${TENV_ROOT}/Terraform/version)
     tenv terraform use "${version}" || return 1
 
-    # Keep tenv's /usr/bin/terraform proxy on PATH; recreate it if an older tfsetup removed it
     _tf_ensure_terraform || return 1
     export PATH="$(tenv update-path)"
 
