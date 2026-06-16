@@ -61,11 +61,12 @@ _kubectl_deployment_selector() {
         return 1
     fi
 
+    # kubectl jsonpath cannot range over maps; go-template can.
     selector=$(kubectl get deployment "$deployment" -n "$namespace" \
-        -o jsonpath='{range $k,$v := .spec.selector.matchLabels}{printf "%s=%s," $k $v}{end}' | sed 's/,$//')
+        -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' \
+        | sed 's/,$//')
 
     if [[ -z "$selector" ]]; then
-        echo "Error: no pod selector on deployment '$deployment'" >&2
         return 1
     fi
 
@@ -115,7 +116,7 @@ _kubectl_delete_pods() {
     kubectl delete pod -n "$namespace" "${pods[@]}" "${extra_delete_args[@]}"
 }
 
-kubectl_delete_completed_pods_help() {
+_kubectl_delete_completed_pods_help() {
     cat <<'EOF'
 Usage: kubectl_delete_completed_pods -n <namespace>
 
@@ -129,7 +130,7 @@ kubectl_delete_completed_pods() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_delete_completed_pods_help; return 0 ;;
+            -h|--help) _kubectl_delete_completed_pods_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -137,7 +138,7 @@ kubectl_delete_completed_pods() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_delete_completed_pods_help >&2
+                _kubectl_delete_completed_pods_help >&2
                 return 1
                 ;;
         esac
@@ -146,7 +147,7 @@ kubectl_delete_completed_pods() {
     _kubectl_delete_pods "$namespace" "completed pods" '$3=="Completed"'
 }
 
-kubectl_delete_evicted_pods_help() {
+_kubectl_delete_evicted_pods_help() {
     cat <<'EOF'
 Usage: kubectl_delete_evicted_pods -n <namespace>
 
@@ -160,7 +161,7 @@ kubectl_delete_evicted_pods() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_delete_evicted_pods_help; return 0 ;;
+            -h|--help) _kubectl_delete_evicted_pods_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -168,7 +169,7 @@ kubectl_delete_evicted_pods() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_delete_evicted_pods_help >&2
+                _kubectl_delete_evicted_pods_help >&2
                 return 1
                 ;;
         esac
@@ -177,7 +178,7 @@ kubectl_delete_evicted_pods() {
     _kubectl_delete_pods "$namespace" "evicted pods" '$3=="Evicted"'
 }
 
-kubectl_delete_error_pods_help() {
+_kubectl_delete_error_pods_help() {
     cat <<'EOF'
 Usage: kubectl_delete_error_pods -n <namespace>
 
@@ -191,7 +192,7 @@ kubectl_delete_error_pods() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_delete_error_pods_help; return 0 ;;
+            -h|--help) _kubectl_delete_error_pods_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -199,7 +200,7 @@ kubectl_delete_error_pods() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_delete_error_pods_help >&2
+                _kubectl_delete_error_pods_help >&2
                 return 1
                 ;;
         esac
@@ -209,7 +210,7 @@ kubectl_delete_error_pods() {
         '$3 ~ /Error|CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|RunContainerError|ContainerStatusUnknown/'
 }
 
-kubectl_delete_stuck_terminating_pods_help() {
+_kubectl_delete_stuck_terminating_pods_help() {
     cat <<'EOF'
 Usage: kubectl_delete_stuck_terminating_pods -n <namespace>
 
@@ -223,7 +224,7 @@ kubectl_delete_stuck_terminating_pods() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_delete_stuck_terminating_pods_help; return 0 ;;
+            -h|--help) _kubectl_delete_stuck_terminating_pods_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -231,7 +232,7 @@ kubectl_delete_stuck_terminating_pods() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_delete_stuck_terminating_pods_help >&2
+                _kubectl_delete_stuck_terminating_pods_help >&2
                 return 1
                 ;;
         esac
@@ -241,7 +242,7 @@ kubectl_delete_stuck_terminating_pods() {
         --grace-period=0 --force
 }
 
-kubectl_restart_crashloop_pods_help() {
+_kubectl_restart_crashloop_pods_help() {
     cat <<'EOF'
 Usage: kubectl_restart_crashloop_pods -n <namespace>
 
@@ -255,7 +256,7 @@ kubectl_restart_crashloop_pods() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_restart_crashloop_pods_help; return 0 ;;
+            -h|--help) _kubectl_restart_crashloop_pods_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -263,7 +264,7 @@ kubectl_restart_crashloop_pods() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_restart_crashloop_pods_help >&2
+                _kubectl_restart_crashloop_pods_help >&2
                 return 1
                 ;;
         esac
@@ -272,7 +273,7 @@ kubectl_restart_crashloop_pods() {
     _kubectl_delete_pods "$namespace" "CrashLoopBackOff pods" '$3=="CrashLoopBackOff"'
 }
 
-kubectl_cleanup_namespace_help() {
+_kubectl_cleanup_namespace_help() {
     cat <<'EOF'
 Usage: kubectl_cleanup_namespace -n <namespace>
 
@@ -286,7 +287,7 @@ kubectl_cleanup_namespace() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_cleanup_namespace_help; return 0 ;;
+            -h|--help) _kubectl_cleanup_namespace_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -294,7 +295,7 @@ kubectl_cleanup_namespace() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_cleanup_namespace_help >&2
+                _kubectl_cleanup_namespace_help >&2
                 return 1
                 ;;
         esac
@@ -353,7 +354,7 @@ kubectl_cleanup_namespace() {
     echo "Cleanup complete for namespace: ${namespace}."
 }
 
-kubectl_pods_by_node_help() {
+_kubectl_pods_by_node_help() {
     cat <<'EOF'
 Usage: kubectl_pods_by_node [-n <namespace>]
 
@@ -366,7 +367,7 @@ kubectl_pods_by_node() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_pods_by_node_help; return 0 ;;
+            -h|--help) _kubectl_pods_by_node_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -374,7 +375,7 @@ kubectl_pods_by_node() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_pods_by_node_help >&2
+                _kubectl_pods_by_node_help >&2
                 return 1
                 ;;
         esac
@@ -389,7 +390,7 @@ kubectl_pods_by_node() {
     fi
 }
 
-kubectl_pods_by_restart_count_help() {
+_kubectl_pods_by_restart_count_help() {
     cat <<'EOF'
 Usage: kubectl_pods_by_restart_count [-n <namespace>]
 
@@ -402,7 +403,7 @@ kubectl_pods_by_restart_count() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_pods_by_restart_count_help; return 0 ;;
+            -h|--help) _kubectl_pods_by_restart_count_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -410,7 +411,7 @@ kubectl_pods_by_restart_count() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_pods_by_restart_count_help >&2
+                _kubectl_pods_by_restart_count_help >&2
                 return 1
                 ;;
         esac
@@ -425,7 +426,7 @@ kubectl_pods_by_restart_count() {
     fi
 }
 
-kubectl_top_pods_help() {
+_kubectl_top_pods_help() {
     cat <<'EOF'
 Usage: kubectl_top_pods [-n <namespace>]
 
@@ -438,7 +439,7 @@ kubectl_top_pods() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_top_pods_help; return 0 ;;
+            -h|--help) _kubectl_top_pods_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -446,7 +447,7 @@ kubectl_top_pods() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_top_pods_help >&2
+                _kubectl_top_pods_help >&2
                 return 1
                 ;;
         esac
@@ -461,7 +462,7 @@ kubectl_top_pods() {
     fi
 }
 
-kubectl_top_nodes_help() {
+_kubectl_top_nodes_help() {
     cat <<'EOF'
 Usage: kubectl_top_nodes
 
@@ -470,14 +471,14 @@ EOF
 }
 
 kubectl_top_nodes() {
-    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { kubectl_top_nodes_help; return 0; }
-    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; kubectl_top_nodes_help >&2; return 1; }
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _kubectl_top_nodes_help; return 0; }
+    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; _kubectl_top_nodes_help >&2; return 1; }
 
     _kubectl_require || return 1
     kubectl top nodes
 }
 
-kubectl_pod_watch_help() {
+_kubectl_pod_watch_help() {
     cat <<'EOF'
 Usage: kubectl_pod_watch [-n <namespace>]
 
@@ -490,7 +491,7 @@ kubectl_pod_watch() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_pod_watch_help; return 0 ;;
+            -h|--help) _kubectl_pod_watch_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -498,7 +499,7 @@ kubectl_pod_watch() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_pod_watch_help >&2
+                _kubectl_pod_watch_help >&2
                 return 1
                 ;;
         esac
@@ -513,7 +514,7 @@ kubectl_pod_watch() {
     fi
 }
 
-kubectl_pod_logs_help() {
+_kubectl_pod_logs_help() {
     cat <<'EOF'
 Usage: kubectl_pod_logs -n <namespace> -p <pod> [-f] [--tail N] [--container NAME]
 
@@ -541,7 +542,7 @@ kubectl_pod_logs() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_pod_logs_help; return 0 ;;
+            -h|--help) _kubectl_pod_logs_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -568,7 +569,7 @@ kubectl_pod_logs() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_pod_logs_help >&2
+                _kubectl_pod_logs_help >&2
                 return 1
                 ;;
         esac
@@ -594,7 +595,7 @@ kubectl_pod_logs() {
     kubectl "${log_args[@]}"
 }
 
-kubectl_deployment_logs_help() {
+_kubectl_deployment_logs_help() {
     cat <<'EOF'
 Usage: kubectl_deployment_logs -n <namespace> -d <deployment> [-f] [--tail N] [--container NAME]
 
@@ -622,7 +623,7 @@ kubectl_deployment_logs() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_deployment_logs_help; return 0 ;;
+            -h|--help) _kubectl_deployment_logs_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -649,7 +650,7 @@ kubectl_deployment_logs() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_deployment_logs_help >&2
+                _kubectl_deployment_logs_help >&2
                 return 1
                 ;;
         esac
@@ -659,21 +660,25 @@ kubectl_deployment_logs() {
     _kubectl_require_value "$namespace" "-n" || return 1
     _kubectl_require_value "$deployment" "-d" || return 1
 
-    local selector
-    selector=$(_kubectl_deployment_selector "$namespace" "$deployment") || return 1
-
-    local pod_count
-    pod_count=$(kubectl get pods -n "$namespace" -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-
-    if [[ "$pod_count" -eq 0 ]]; then
-        echo "No pods found for deployment '$deployment' in namespace '$namespace' (selector: $selector)" >&2
+    if ! kubectl get deployment "$deployment" -n "$namespace" >/dev/null 2>&1; then
+        echo "Error: deployment '$deployment' not found in namespace '$namespace'" >&2
         return 1
     fi
 
-    echo "Deployment: $deployment (namespace: $namespace, selector: $selector, pods: $pod_count)"
-    kubectl get pods -n "$namespace" -l "$selector" --no-headers
+    local selector=""
+    selector=$(_kubectl_deployment_selector "$namespace" "$deployment" 2>/dev/null || true)
 
-    local -a log_args=(logs -n "$namespace" -l "$selector" --all-containers=true --prefix=true)
+    if [[ -n "$selector" ]]; then
+        local pod_count
+        pod_count=$(kubectl get pods -n "$namespace" -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        echo "Deployment: $deployment (namespace: $namespace, selector: $selector, pods: $pod_count)"
+        kubectl get pods -n "$namespace" -l "$selector" --no-headers
+    else
+        echo "Deployment: $deployment (namespace: $namespace)"
+        echo "Note: could not derive label selector; fetching logs via deployment resource."
+    fi
+
+    local -a log_args=(logs -n "$namespace" "deployment/${deployment}" --all-containers=true --prefix=true)
 
     if [[ -n "$container" ]]; then
         log_args+=(--container="$container")
@@ -689,7 +694,7 @@ kubectl_deployment_logs() {
     kubectl "${log_args[@]}"
 }
 
-kubectl_pod_shell_help() {
+_kubectl_pod_shell_help() {
     cat <<'EOF'
 Usage: kubectl_pod_shell -n <namespace> -p <pod>
 
@@ -702,7 +707,7 @@ kubectl_pod_shell() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_pod_shell_help; return 0 ;;
+            -h|--help) _kubectl_pod_shell_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -715,7 +720,7 @@ kubectl_pod_shell() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_pod_shell_help >&2
+                _kubectl_pod_shell_help >&2
                 return 1
                 ;;
         esac
@@ -728,7 +733,7 @@ kubectl_pod_shell() {
     kubectl exec -it -n "$namespace" "$pod" -- /bin/sh
 }
 
-kubectl_pod_bash_help() {
+_kubectl_pod_bash_help() {
     cat <<'EOF'
 Usage: kubectl_pod_bash -n <namespace> -p <pod>
 
@@ -741,7 +746,7 @@ kubectl_pod_bash() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_pod_bash_help; return 0 ;;
+            -h|--help) _kubectl_pod_bash_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -754,7 +759,7 @@ kubectl_pod_bash() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_pod_bash_help >&2
+                _kubectl_pod_bash_help >&2
                 return 1
                 ;;
         esac
@@ -767,7 +772,7 @@ kubectl_pod_bash() {
     kubectl exec -it -n "$namespace" "$pod" -- /bin/bash
 }
 
-kubectl_describe_pod_help() {
+_kubectl_describe_pod_help() {
     cat <<'EOF'
 Usage: kubectl_describe_pod -n <namespace> -p <pod>
 
@@ -780,7 +785,7 @@ kubectl_describe_pod() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_describe_pod_help; return 0 ;;
+            -h|--help) _kubectl_describe_pod_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -793,7 +798,7 @@ kubectl_describe_pod() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_describe_pod_help >&2
+                _kubectl_describe_pod_help >&2
                 return 1
                 ;;
         esac
@@ -806,7 +811,7 @@ kubectl_describe_pod() {
     kubectl describe pod -n "$namespace" "$pod"
 }
 
-kubectl_get_all_help() {
+_kubectl_get_all_help() {
     cat <<'EOF'
 Usage: kubectl_get_all [-n <namespace>]
 
@@ -819,7 +824,7 @@ kubectl_get_all() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_get_all_help; return 0 ;;
+            -h|--help) _kubectl_get_all_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -827,7 +832,7 @@ kubectl_get_all() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_get_all_help >&2
+                _kubectl_get_all_help >&2
                 return 1
                 ;;
         esac
@@ -842,7 +847,7 @@ kubectl_get_all() {
     fi
 }
 
-kubectl_restart_deployment_help() {
+_kubectl_restart_deployment_help() {
     cat <<'EOF'
 Usage: kubectl_restart_deployment -n <namespace> -d <deployment>
 
@@ -855,7 +860,7 @@ kubectl_restart_deployment() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_restart_deployment_help; return 0 ;;
+            -h|--help) _kubectl_restart_deployment_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -868,7 +873,7 @@ kubectl_restart_deployment() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_restart_deployment_help >&2
+                _kubectl_restart_deployment_help >&2
                 return 1
                 ;;
         esac
@@ -881,7 +886,7 @@ kubectl_restart_deployment() {
     kubectl rollout restart deployment "$deployment" -n "$namespace"
 }
 
-kubectl_rollout_status_help() {
+_kubectl_rollout_status_help() {
     cat <<'EOF'
 Usage: kubectl_rollout_status -n <namespace> -d <deployment>
 
@@ -894,7 +899,7 @@ kubectl_rollout_status() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_rollout_status_help; return 0 ;;
+            -h|--help) _kubectl_rollout_status_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -907,7 +912,7 @@ kubectl_rollout_status() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_rollout_status_help >&2
+                _kubectl_rollout_status_help >&2
                 return 1
                 ;;
         esac
@@ -920,7 +925,7 @@ kubectl_rollout_status() {
     kubectl rollout status deployment "$deployment" -n "$namespace"
 }
 
-kubectl_scale_deployment_help() {
+_kubectl_scale_deployment_help() {
     cat <<'EOF'
 Usage: kubectl_scale_deployment -n <namespace> -d <deployment> -r <replicas>
 
@@ -933,7 +938,7 @@ kubectl_scale_deployment() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_scale_deployment_help; return 0 ;;
+            -h|--help) _kubectl_scale_deployment_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -951,7 +956,7 @@ kubectl_scale_deployment() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_scale_deployment_help >&2
+                _kubectl_scale_deployment_help >&2
                 return 1
                 ;;
         esac
@@ -965,7 +970,7 @@ kubectl_scale_deployment() {
     kubectl scale deployment "$deployment" --replicas="$replicas" -n "$namespace"
 }
 
-kubectl_decode_secret_help() {
+_kubectl_decode_secret_help() {
     cat <<'EOF'
 Usage: kubectl_decode_secret -n <namespace> -s <secret> -k <key>
 
@@ -978,7 +983,7 @@ kubectl_decode_secret() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_decode_secret_help; return 0 ;;
+            -h|--help) _kubectl_decode_secret_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -996,7 +1001,7 @@ kubectl_decode_secret() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_decode_secret_help >&2
+                _kubectl_decode_secret_help >&2
                 return 1
                 ;;
         esac
@@ -1011,7 +1016,7 @@ kubectl_decode_secret() {
     echo
 }
 
-kubectl_context_help() {
+_kubectl_context_help() {
     cat <<'EOF'
 Usage: kubectl_context
 
@@ -1020,14 +1025,14 @@ EOF
 }
 
 kubectl_context() {
-    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { kubectl_context_help; return 0; }
-    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; kubectl_context_help >&2; return 1; }
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _kubectl_context_help; return 0; }
+    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; _kubectl_context_help >&2; return 1; }
 
     _kubectl_require || return 1
     kubectl config current-context
 }
 
-kubectl_contexts_help() {
+_kubectl_contexts_help() {
     cat <<'EOF'
 Usage: kubectl_contexts
 
@@ -1036,14 +1041,14 @@ EOF
 }
 
 kubectl_contexts() {
-    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { kubectl_contexts_help; return 0; }
-    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; kubectl_contexts_help >&2; return 1; }
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _kubectl_contexts_help; return 0; }
+    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; _kubectl_contexts_help >&2; return 1; }
 
     _kubectl_require || return 1
     kubectl config get-contexts
 }
 
-kubectl_use_context_help() {
+_kubectl_use_context_help() {
     cat <<'EOF'
 Usage: kubectl_use_context -c <context>
 
@@ -1056,7 +1061,7 @@ kubectl_use_context() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_use_context_help; return 0 ;;
+            -h|--help) _kubectl_use_context_help; return 0 ;;
             -c|--context)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 context="$2"
@@ -1064,7 +1069,7 @@ kubectl_use_context() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_use_context_help >&2
+                _kubectl_use_context_help >&2
                 return 1
                 ;;
         esac
@@ -1076,7 +1081,7 @@ kubectl_use_context() {
     kubectl config use-context "$context"
 }
 
-kubectl_namespaces_help() {
+_kubectl_namespaces_help() {
     cat <<'EOF'
 Usage: kubectl_namespaces
 
@@ -1085,14 +1090,14 @@ EOF
 }
 
 kubectl_namespaces() {
-    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { kubectl_namespaces_help; return 0; }
-    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; kubectl_namespaces_help >&2; return 1; }
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _kubectl_namespaces_help; return 0; }
+    [[ $# -gt 0 ]] && { echo "Unknown argument: $1" >&2; _kubectl_namespaces_help >&2; return 1; }
 
     _kubectl_require || return 1
     kubectl get ns
 }
 
-kubectl_events_help() {
+_kubectl_events_help() {
     cat <<'EOF'
 Usage: kubectl_events [-n <namespace>]
 
@@ -1105,7 +1110,7 @@ kubectl_events() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_events_help; return 0 ;;
+            -h|--help) _kubectl_events_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -1113,7 +1118,7 @@ kubectl_events() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_events_help >&2
+                _kubectl_events_help >&2
                 return 1
                 ;;
         esac
@@ -1128,7 +1133,7 @@ kubectl_events() {
     fi
 }
 
-kubectl_failed_events_help() {
+_kubectl_failed_events_help() {
     cat <<'EOF'
 Usage: kubectl_failed_events [-n <namespace>]
 
@@ -1141,7 +1146,7 @@ kubectl_failed_events() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help) kubectl_failed_events_help; return 0 ;;
+            -h|--help) _kubectl_failed_events_help; return 0 ;;
             -n|--namespace)
                 _kubectl_flag_value "$1" "${2:-}" || return 1
                 namespace="$2"
@@ -1149,7 +1154,7 @@ kubectl_failed_events() {
                 ;;
             *)
                 echo "Unknown argument: $1" >&2
-                kubectl_failed_events_help >&2
+                _kubectl_failed_events_help >&2
                 return 1
                 ;;
         esac
