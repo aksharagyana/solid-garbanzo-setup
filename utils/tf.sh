@@ -1,3 +1,6 @@
+# Auto-install Terraform versions required by project .terraform-version files.
+export TENV_AUTO_INSTALL="${TENV_AUTO_INSTALL:-true}"
+
 # function tf_ls_workspace() {
 #      terraform workspace list
 # }
@@ -192,4 +195,144 @@ tfws() {
 
     # Final confirmation
     echo -e "Current workspace: \033[1;32m$(terraform workspace show 2>/dev/null)\033[0m"
+}
+
+_tf_resolve_version() {
+    local dir="${1:-$PWD}"
+    local tenv_root="${TENV_ROOT:-${HOME}/.tenv}"
+
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/.terraform-version" ]]; then
+            tr -d '[:space:]' < "$dir/.terraform-version"
+            return 0
+        fi
+        if [[ -f "$dir/.tfswitchrc" ]]; then
+            tr -d '[:space:]' < "$dir/.tfswitchrc"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+
+    if [[ -f "$tenv_root/Terraform/version" ]]; then
+        tr -d '[:space:]' < "$tenv_root/Terraform/version"
+        return 0
+    fi
+
+    return 1
+}
+
+_tf_ensure_terraform() {
+    # Prefer tenv's package proxy — it handles .terraform-version and other resolution rules.
+    if [[ -x /usr/bin/terraform ]]; then
+        rm -f /usr/local/bin/terraform
+        if command -v tenv >/dev/null 2>&1; then
+            export PATH="$(tenv update-path)"
+        fi
+        command -v terraform >/dev/null 2>&1 && return 0
+    fi
+
+    if command -v terraform >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Restore the package proxy if tenv was installed via dpkg but the binary was removed.
+    if command -v dpkg >/dev/null 2>&1 && dpkg -L tenv 2>/dev/null | grep -qxF /usr/bin/terraform; then
+        apt-get install --reinstall -y tenv >/dev/null 2>&1 && command -v terraform >/dev/null 2>&1 && return 0
+    fi
+
+    local tenv_root="${TENV_ROOT:-${HOME}/.tenv}"
+    local proxy="/usr/local/bin/terraform"
+
+    mkdir -p "$(dirname "$proxy")"
+    cat > "$proxy" <<'WRAPPER'
+#!/usr/bin/env bash
+TENV_ROOT="${TENV_ROOT:-$HOME/.tenv}"
+export TENV_AUTO_INSTALL="${TENV_AUTO_INSTALL:-true}"
+
+_tf_resolve() {
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/.terraform-version" ]]; then
+            tr -d '[:space:]' < "$dir/.terraform-version"
+            return 0
+        fi
+        if [[ -f "$dir/.tfswitchrc" ]]; then
+            tr -d '[:space:]' < "$dir/.tfswitchrc"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    if [[ -f "$TENV_ROOT/Terraform/version" ]]; then
+        tr -d '[:space:]' < "$TENV_ROOT/Terraform/version"
+        return 0
+    fi
+    return 1
+}
+
+version="$(_tf_resolve)" || {
+    echo "Error: No Terraform version resolved (run tfsetup -v <version>)." >&2
+    exit 1
+}
+
+bin="$TENV_ROOT/Terraform/$version/terraform"
+if [[ ! -x "$bin" ]]; then
+    if [[ "$TENV_AUTO_INSTALL" == true ]] && command -v tenv >/dev/null 2>&1; then
+        tenv terraform install "$version" || exit 1
+    else
+        echo "Error: Terraform ${version} is not installed. Run: tenv terraform install ${version}" >&2
+        exit 1
+    fi
+fi
+exec "$bin" "$@"
+WRAPPER
+    chmod +x "$proxy"
+}
+
+tfsetup() {
+    local version=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--version)
+                version="$2"
+                shift 2
+                ;;
+            *)
+                echo "Error: Unknown argument '$1'"
+                echo "Usage: tfsetup -v <version>"
+                return 1
+                ;;
+        esac
+    done
+
+    # Validate that a version was provided
+    if [[ -z "$version" ]]; then
+        echo "Error: Missing required terraform version."
+        echo "Usage: tfsetup -v <version>"
+        return 1
+    fi
+
+    if ! command -v tenv >/dev/null 2>&1; then
+        echo "Error: tenv not found in PATH." >&2
+        return 1
+    fi
+
+    echo "[-] Setting up Terraform v${version} via tenv..."
+
+    # Install the version if it is not already cached
+    if ! tenv terraform list | grep -q "${version}"; then
+        echo "[*] Version ${version} not found locally. Installing..."
+        tenv terraform install "${version}" || return 1
+    fi
+
+    # Select the version globally (writes ${TENV_ROOT}/Terraform/version)
+    tenv terraform use "${version}" || return 1
+
+    # Keep tenv's /usr/bin/terraform proxy on PATH; recreate it if an older tfsetup removed it
+    _tf_ensure_terraform || return 1
+    export PATH="$(tenv update-path)"
+
+    echo "[✓] Success! Active version is now:"
+    terraform --version
 }
