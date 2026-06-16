@@ -1,121 +1,299 @@
-#!/bin/bash
+#!/usr/bin/env python3
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
-# Resolve this script's directory in bash or zsh (onlocal is often sourced from zsh).
-if [[ -n "${ZSH_VERSION:-}" ]]; then
-    _AI_WRAPPER_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
-else
-    _AI_WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
+SKILL_FILENAMES = {"skill.md", "skills.md"}
+FLAT_SKILL_SUFFIX = ".SKILLS.md"
+LEGACY_NESTED_FILENAME = "SKILLS.md"
+OUTPUT_FILENAME = "SKILL.md"
+DEFAULT_DEST = Path("~/.codex/skills").expanduser()
 
-get_skills_help() {
-    cat <<'EOF'
-get_skills — install Codex skill files from a remote Git repository
 
-Extract every SKILL.md or skills.md (case-insensitive) from a repo and save
-them under per-skill folders for local Codex use.
+def repo_slug(repo_url: str) -> str:
+    name = repo_url.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name or "repo"
 
-Usage:
-  get_skills -r <REPO_URL> [-d <DEST_DIR>]
-  get_skills -h | --help
 
-Options:
-  -r, --repo URL       HTTPS Git repository URL (required)
-  -d, --directory DIR  Destination directory (default: ~/.codex/skills/)
-  -h, --help           Show this help
+def parent_folder_name(skill_path: Path, clone_root: Path, slug: str) -> str:
+    parent = skill_path.parent
+    if parent == clone_root:
+        return slug
+    name = parent.name
+    return name or slug
 
-How it works:
-  1. Shallow-clones the repository into a temporary workspace
-  2. Recursively finds SKILL.md / skills.md files
-  3. Writes each skill to: <DEST>/<parent-folder>/SKILL.md
-  4. Prompts before overwriting any file that already exists
 
-Naming:
-  Repo path                          ->  Output file
-  skills/tdd/SKILL.md                ->  ~/.codex/skills/tdd/SKILL.md
-  modules/code-reviewer/skills.md    ->  ~/.codex/skills/code-reviewer/SKILL.md
+def clone_repo(repo_url: str, workspace: Path) -> Path:
+    clone_dir = workspace / repo_slug(repo_url)
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", repo_url, str(clone_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip()
+        print(
+            f"[!] Critical Error: Failed to clone repository '{repo_url}'.",
+            file=sys.stderr,
+        )
+        if message:
+            print(message, file=sys.stderr)
+        sys.exit(1)
+    return clone_dir
 
-  The parent folder name becomes a subdirectory under the destination.
-  The skill file is always named SKILL.md inside that folder.
 
-Overwrite:
-  If a destination file already exists, you are asked:
-    Overwrite? [y/N]
-  Enter or N keeps the existing file; y replaces it.
+def find_skill_files(clone_root: Path) -> list[Path]:
+    matches: list[Path] = []
+    for root, _, files in os.walk(clone_root):
+        for filename in files:
+            if filename.lower() in SKILL_FILENAMES:
+                matches.append(Path(root) / filename)
+    return sorted(matches)
 
-Examples:
-  get_skills -r https://github.com/org/codex-skills.git
-  get_skills -r https://github.com/org/codex-skills.git -d ~/my-skills
-  get_skills --help
 
-Requirements:
-  - python3, git
-  - network access to clone the repository
+def find_flat_skill_files(dest_dir: Path) -> list[Path]:
+    if not dest_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in dest_dir.glob(f"*{FLAT_SKILL_SUFFIX}")
+        if path.is_file()
+    )
 
-See also: fix_skills — repair legacy flat *.SKILLS.md files
 
-EOF
-}
+def destination_path(dest_dir: Path, folder: str) -> Path:
+    return dest_dir / folder / OUTPUT_FILENAME
 
-fix_skills_help() {
-    cat <<'EOF'
-fix_skills — repair legacy skill file layouts
 
-Repairs:
-  ~/.codex/skills/name.SKILLS.md      ->  ~/.codex/skills/name/SKILL.md
-  ~/.codex/skills/name/SKILLS.md      ->  ~/.codex/skills/name/SKILL.md
+def flat_skill_folder(flat_file: Path) -> str:
+    return flat_file.name[: -len(FLAT_SKILL_SUFFIX)]
 
-Usage:
-  fix_skills [-d <DEST_DIR>]
-  fix_skills -h | --help
 
-Options:
-  -d, --directory DIR  Skills directory to repair (default: ~/.codex/skills/)
-  -h, --help           Show this help
+def confirm_overwrite(dest_file: Path) -> bool:
+    if not dest_file.exists():
+        return True
+    try:
+        answer = input(
+            f"[!] {dest_file} already exists. Overwrite? [y/N]: "
+        ).strip()
+    except EOFError:
+        print("  [-] Skipped (non-interactive).")
+        return False
+    if answer.lower() in ("y", "yes"):
+        return True
+    print(f"  [-] Skipped: {dest_file}")
+    return False
 
-Behavior:
-  1. Moves top-level *.SKILLS.md into <skill-name>/SKILL.md
-  2. Renames nested SKILLS.md to SKILL.md inside skill folders
-  3. Prompts before overwriting an existing SKILL.md
 
-Examples:
-  fix_skills
-  fix_skills -d ~/.codex/skills
+def find_nested_legacy_skill_files(dest_dir: Path) -> list[Path]:
+    if not dest_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in dest_dir.rglob(LEGACY_NESTED_FILENAME)
+        if path.is_file() and path.name == LEGACY_NESTED_FILENAME
+    )
 
-EOF
-}
 
-fix_skills() {
-    case "${1:-}" in
-        -h|--help|help)
-            fix_skills_help
+def fix_skill_layout(dest_dir: Path) -> int:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    moved: list[Path] = []
+    skipped: list[Path] = []
+
+    print(f"[*] Scanning for flat *{FLAT_SKILL_SUFFIX} files in: {dest_dir}")
+    flat_files = find_flat_skill_files(dest_dir)
+
+    for src in flat_files:
+        folder = flat_skill_folder(src)
+        if not folder:
+            print(f"  [!] Could not derive folder name from: {src.name}", file=sys.stderr)
+            skipped.append(src.resolve())
+            continue
+
+        dest_file = destination_path(dest_dir, folder)
+        if dest_file.exists() and not confirm_overwrite(dest_file):
+            skipped.append(src.resolve())
+            continue
+
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest_file))
+        moved.append(dest_file.resolve())
+        print(f"  [+] {src.name}  ->  {dest_file}")
+
+    print(f"[*] Scanning for nested {LEGACY_NESTED_FILENAME} files in: {dest_dir}")
+    nested_files = find_nested_legacy_skill_files(dest_dir)
+
+    if not flat_files and not nested_files:
+        print("[*] Nothing to fix — no legacy skill files found.")
+        return 0
+
+    for src in nested_files:
+        dest_file = src.parent / OUTPUT_FILENAME
+        if dest_file.resolve() == src.resolve():
+            continue
+        if dest_file.exists() and not confirm_overwrite(dest_file):
+            skipped.append(src.resolve())
+            continue
+
+        shutil.move(str(src), str(dest_file))
+        moved.append(dest_file.resolve())
+        print(f"  [+] {src}  ->  {dest_file}")
+
+    if moved:
+        print(f"\n[*] Fixed {len(moved)} skill file(s):")
+        for path in moved:
+            print(path)
+    if skipped:
+        print(f"\n[*] Skipped {len(skipped)} file(s):")
+        for path in skipped:
+            print(path)
+
+    return 0 if not skipped or moved else 1
+
+
+def fix_flat_skills(dest_dir: Path) -> int:
+    return fix_skill_layout(dest_dir)
+
+def run_install(args: argparse.Namespace) -> int:
+    repo_url = args.repo
+    dest_dir = Path(args.directory).expanduser().resolve()
+    slug = repo_slug(repo_url)
+
+    print(f"[*] Target location: {dest_dir}")
+    print(f"[*] Fetching repository: {repo_url}")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    created: list[Path] = []
+    skipped: list[Path] = []
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clone_root = clone_repo(repo_url, Path(tmpdir))
+
+        print("[*] Recursively scanning for SKILL.md / skills.md ...")
+        skill_files = find_skill_files(clone_root)
+
+        if not skill_files:
+            print(
+                "[!] Warning: No SKILL.md or skills.md files found in this repository."
+            )
             return 0
-            ;;
-    esac
 
-    local script_path="${_AI_WRAPPER_DIR}/ai.py"
+        for src in skill_files:
+            folder = parent_folder_name(src, clone_root, slug)
+            dest_file = destination_path(dest_dir, folder)
+            if not confirm_overwrite(dest_file):
+                skipped.append(dest_file.resolve())
+                continue
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest_file)
+            created.append(dest_file.resolve())
+            print(f"  [+] {dest_file}")
 
-    if [[ ! -f "${script_path}" ]]; then
-        echo "[!] Error: Python script not found at: ${script_path}" >&2
-        return 1
-    fi
+    if created:
+        print(f"\n[*] Installed {len(created)} skill file(s):")
+        for path in created:
+            print(path)
+    if skipped:
+        print(f"\n[*] Skipped {len(skipped)} existing file(s):")
+        for path in skipped:
+            print(path)
+    if not created and not skipped:
+        print("\n[*] No skill files installed.")
 
-    python3 "${script_path}" fix "$@"
-}
+    return 0
 
-get_skills() {
-    case "${1:-}" in
-        -h|--help|help)
-            get_skills_help
-            return 0
-            ;;
-    esac
 
-    local script_path="${_AI_WRAPPER_DIR}/ai.py"
+def run_fix(args: argparse.Namespace) -> int:
+    dest_dir = Path(args.directory).expanduser().resolve()
+    return fix_flat_skills(dest_dir)
 
-    if [[ ! -f "${script_path}" ]]; then
-        echo "[!] Error: Python script not found at: ${script_path}" >&2
-        return 1
-    fi
 
-    python3 "${script_path}" "$@"
-}
+def build_install_parser() -> argparse.ArgumentParser:
+    epilog = """
+examples:
+  %(prog)s -r https://github.com/org/codex-skills.git
+  %(prog)s -r https://github.com/org/codex-skills.git -d ~/my-skills
+
+naming:
+  skills/tdd/SKILL.md             ->  ~/.codex/skills/tdd/SKILL.md
+  modules/reviewer/skills.md      ->  ~/.codex/skills/reviewer/SKILL.md
+
+  Each skill is saved under <destination>/<parent-folder>/SKILL.md.
+
+overwrite:
+  Existing destination files trigger an interactive prompt [y/N].
+""".strip()
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Extract SKILL.md / skills.md files from a Git repo into "
+            "per-skill folders under a local skills directory."
+        ),
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-r",
+        "--repo",
+        required=True,
+        help="HTTPS URL of the Git repository to clone",
+    )
+    parser.add_argument(
+        "-d",
+        "--directory",
+        default=str(DEFAULT_DEST),
+        help=f"destination directory (default: {DEFAULT_DEST})",
+    )
+    return parser
+
+
+def build_fix_parser() -> argparse.ArgumentParser:
+    epilog = f"""
+examples:
+  %(prog)s
+  %(prog)s -d ~/.codex/skills
+
+migration:
+  shipping-and-launch.SKILLS.md       ->  shipping-and-launch/SKILL.md
+  skill-creator/SKILLS.md             ->  skill-creator/SKILL.md
+
+  Repairs flat *{FLAT_SKILL_SUFFIX} files and nested {LEGACY_NESTED_FILENAME} names.
+""".strip()
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Repair legacy skill layouts: flat *"
+            f"{FLAT_SKILL_SUFFIX} and nested {LEGACY_NESTED_FILENAME} "
+            f"-> <name>/{OUTPUT_FILENAME}."
+        ),
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-d",
+        "--directory",
+        default=str(DEFAULT_DEST),
+        help=f"skills directory to repair (default: {DEFAULT_DEST})",
+    )
+    return parser
+
+
+def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "fix":
+        args = build_fix_parser().parse_args(sys.argv[2:])
+        sys.exit(run_fix(args))
+
+    args = build_install_parser().parse_args()
+    sys.exit(run_install(args))
+
+
+if __name__ == "__main__":
+    main()
