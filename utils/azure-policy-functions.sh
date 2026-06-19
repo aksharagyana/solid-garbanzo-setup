@@ -18,11 +18,12 @@ function _parse_args() {
     RULE_FILE=""
     PARAMS_FILE=""
     MANAGEMENT_GROUP=""
+    INITIATIVE_ID=""
 
     # getopts uses global OPTIND; reset so repeat calls in the same shell work.
     OPTIND=1
 
-    while getopts "p:a:f:s:o:d:hn:D:r:u:g:" opt; do
+    while getopts "p:a:f:s:o:d:hn:D:r:u:g:i:" opt; do
         case $opt in
             p) POLICY_ID="$OPTARG" ;;
             a) ASSIGNMENT_ID="$OPTARG" ;;
@@ -35,6 +36,7 @@ function _parse_args() {
             r) RULE_FILE="$OPTARG" ;;
             u) PARAMS_FILE="$OPTARG" ;;
             g) MANAGEMENT_GROUP="$OPTARG" ;;
+            i) INITIATIVE_ID="$OPTARG" ;;
             h) _show_help "$func_name"; exit 0 ;;
             *) echo "Invalid option"; _show_help "$func_name"; exit 1 ;;
         esac
@@ -106,6 +108,123 @@ _parse_policy_assignment_id_impl() {
     fi
 }
 
+_parse_policy_set_definition_id() {
+    local id="$1"
+    POLICY_SET_DEF_NAME=""
+    POLICY_SET_DEF_MG=""
+    POLICY_SET_DEF_SUB=""
+
+    _with_nocasematch _parse_policy_set_definition_id_impl "$id"
+}
+
+_parse_policy_set_definition_id_impl() {
+    local id="$1"
+
+    if [[ "$id" =~ /managementGroups/([^/]+)/providers/Microsoft\.Authorization/policySetDefinitions/([^/]+)$ ]]; then
+        POLICY_SET_DEF_MG="${BASH_REMATCH[1]}"
+        POLICY_SET_DEF_NAME="${BASH_REMATCH[2]}"
+    elif [[ "$id" =~ /subscriptions/([^/]+)/providers/Microsoft\.Authorization/policySetDefinitions/([^/]+)$ ]]; then
+        POLICY_SET_DEF_SUB="${BASH_REMATCH[1]}"
+        POLICY_SET_DEF_NAME="${BASH_REMATCH[2]}"
+    elif [[ "$id" =~ ^/providers/Microsoft\.Authorization/policySetDefinitions/([^/]+)$ ]]; then
+        POLICY_SET_DEF_NAME="${BASH_REMATCH[1]}"
+    else
+        POLICY_SET_DEF_NAME="${id##*/}"
+        POLICY_SET_DEF_NAME="${POLICY_SET_DEF_NAME%.json}"
+    fi
+}
+
+_az_policy_definition_download_to_file() {
+    local policy_id="$1"
+    local output="$2"
+
+    _parse_policy_definition_id "$policy_id"
+
+    local out_dir
+    out_dir=$(dirname "$output")
+    [[ "$out_dir" != "." && -n "$out_dir" ]] && mkdir -p "$out_dir"
+
+    local az_args=(--name "$POLICY_DEF_NAME")
+    [[ -n "$POLICY_DEF_MG" ]] && az_args+=(--management-group "$POLICY_DEF_MG")
+    [[ -n "$POLICY_DEF_SUB" ]] && az_args+=(--subscription "$POLICY_DEF_SUB")
+
+    az policy definition show "${az_args[@]}" --output json > "$output"
+}
+
+_az_policy_set_definition_download_to_file() {
+    local initiative_id="$1"
+    local output="$2"
+
+    _parse_policy_set_definition_id "$initiative_id"
+
+    local out_dir
+    out_dir=$(dirname "$output")
+    [[ "$out_dir" != "." && -n "$out_dir" ]] && mkdir -p "$out_dir"
+
+    local az_args=(--name "$POLICY_SET_DEF_NAME")
+    [[ -n "$POLICY_SET_DEF_MG" ]] && az_args+=(--management-group "$POLICY_SET_DEF_MG")
+    [[ -n "$POLICY_SET_DEF_SUB" ]] && az_args+=(--subscription "$POLICY_SET_DEF_SUB")
+
+    az policy set-definition show "${az_args[@]}" --output json > "$output"
+}
+
+# Download member policy/set definitions referenced by an initiative JSON file.
+# $1 initiative JSON path, $2 base target directory, $3 newline-separated visited initiative ARM ids
+_az_policy_initiative_download_members() {
+    local initiative_file="$1"
+    local base_dir="$2"
+    local visited_initiatives="${3:-}"
+
+    local member_ids
+    member_ids=$(jq -r '
+        (.policyDefinitions // .properties.policyDefinitions // [])[]
+        | .policyDefinitionId // empty
+    ' "$initiative_file")
+
+    if [[ -z "$member_ids" ]]; then
+        echo "  No member policy definitions found in initiative."
+        return 0
+    fi
+
+    local policy_dir="${base_dir}/policies"
+    local initiative_dir="${base_dir}/initiatives"
+    mkdir -p "$policy_dir" "$initiative_dir"
+
+    local member_id member_name output_file
+    while IFS= read -r member_id; do
+        [[ -z "$member_id" ]] && continue
+        member_name="${member_id##*/}"
+
+        if _with_nocasematch [[ "$member_id" =~ /policySetDefinitions/ ]]; then
+            output_file="${initiative_dir}/${member_name}.json"
+            if printf '%s\n' "$visited_initiatives" | grep -Fxq "$member_id"; then
+                echo "  Skipping nested initiative (already downloaded): $member_id"
+                continue
+            fi
+
+            echo "  Downloading nested initiative: $member_id"
+            if ! _az_policy_set_definition_download_to_file "$member_id" "$output_file"; then
+                echo "  Warning: failed to download nested initiative: $member_id"
+                rm -f "$output_file"
+                continue
+            fi
+            echo "    Saved to: $output_file"
+
+            local new_visited="${visited_initiatives}"$'\n'"${member_id}"
+            _az_policy_initiative_download_members "$output_file" "$base_dir" "$new_visited"
+        else
+            output_file="${policy_dir}/${member_name}.json"
+            echo "  Downloading policy definition: $member_id"
+            if ! _az_policy_definition_download_to_file "$member_id" "$output_file"; then
+                echo "  Warning: failed to download policy definition: $member_id"
+                rm -f "$output_file"
+                continue
+            fi
+            echo "    Saved to: $output_file"
+        fi
+    done <<< "$member_ids"
+}
+
 function _show_help() {
     local func="$1"
     case $func in
@@ -113,6 +232,12 @@ function _show_help() {
             echo "Usage: az_policy_definition_download -p <policy_id> [-o <output_file>]"
             echo "  -p  Policy Definition ID or Name"
             echo "  -o  Output JSON file path (optional)"
+            ;;
+        az_policy_initiative_download)
+            echo "Usage: az_policy_initiative_download -i <initiative_id> [-d <target_directory>] [-o <output_file>]"
+            echo "  -i  Policy Initiative (set definition) ID or Name"
+            echo "  -d  Target directory — downloads initiative plus all member policies/initiatives"
+            echo "  -o  Output JSON file path for initiative only (ignored when -d is set)"
             ;;
         az_policy_assignment_download)
             echo "Usage: az_policy_assignment_download -a <assignment_arm_id> [-o <output_file>]"
@@ -170,16 +295,9 @@ az_policy_definition_download() {
     _parse_policy_definition_id "$POLICY_ID"
 
     local output="${OUTPUT_FILE:-${POLICY_DEF_NAME}.json}"
-    local out_dir
-    out_dir=$(dirname "$output")
-    [[ "$out_dir" != "." && -n "$out_dir" ]] && mkdir -p "$out_dir"
-
-    local az_args=(--name "$POLICY_DEF_NAME")
-    [[ -n "$POLICY_DEF_MG" ]] && az_args+=(--management-group "$POLICY_DEF_MG")
-    [[ -n "$POLICY_DEF_SUB" ]] && az_args+=(--subscription "$POLICY_DEF_SUB")
 
     echo "Downloading policy definition: $POLICY_ID"
-    if ! az policy definition show "${az_args[@]}" --output json > "$output"; then
+    if ! _az_policy_definition_download_to_file "$POLICY_ID" "$output"; then
         echo "Error: failed to download policy definition (name=$POLICY_DEF_NAME)"
         rm -f "$output"
         return 1
@@ -212,6 +330,54 @@ az_policy_assignment_download() {
     echo "Downloading policy assignment: $ASSIGNMENT_ID"
     if ! az policy assignment show "${az_args[@]}" --output json > "$output"; then
         echo "Error: failed to download policy assignment (name=$ASSIGN_NAME)"
+        rm -f "$output"
+        return 1
+    fi
+    echo "Saved to: $output"
+}
+
+# ================================================
+# 2b. Download Policy Initiative (set definition) and member policies
+# ================================================
+az_policy_initiative_download() {
+    _parse_args "${FUNCNAME[0]}" "$@"
+
+    if [[ -z "$INITIATIVE_ID" ]]; then
+        echo "Error: -i <initiative_id> is required"
+        _show_help "${FUNCNAME[0]}"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "Error: jq is required but not installed"
+        return 1
+    fi
+
+    _parse_policy_set_definition_id "$INITIATIVE_ID"
+
+    if [[ -n "$TARGET_DIR" ]]; then
+        mkdir -p "$TARGET_DIR"
+        local initiative_file="${TARGET_DIR}/${POLICY_SET_DEF_NAME}.json"
+
+        echo "Downloading policy initiative: $INITIATIVE_ID"
+        if ! _az_policy_set_definition_download_to_file "$INITIATIVE_ID" "$initiative_file"; then
+            echo "Error: failed to download policy initiative (name=$POLICY_SET_DEF_NAME)"
+            rm -f "$initiative_file"
+            return 1
+        fi
+        echo "Saved initiative to: $initiative_file"
+
+        echo "Downloading member policies for initiative: $POLICY_SET_DEF_NAME"
+        _az_policy_initiative_download_members "$initiative_file" "$TARGET_DIR" "$INITIATIVE_ID"
+        echo "Initiative bundle saved under: $TARGET_DIR"
+        return 0
+    fi
+
+    local output="${OUTPUT_FILE:-${POLICY_SET_DEF_NAME}.json}"
+
+    echo "Downloading policy initiative: $INITIATIVE_ID"
+    if ! _az_policy_set_definition_download_to_file "$INITIATIVE_ID" "$output"; then
+        echo "Error: failed to download policy initiative (name=$POLICY_SET_DEF_NAME)"
         rm -f "$output"
         return 1
     fi
@@ -498,6 +664,7 @@ az_policy_help() {
     echo ""
     echo "Available functions:"
     echo "  az_policy_definition_download   - Download policy definition"
+    echo "  az_policy_initiative_download   - Download initiative and member policies"
     echo "  az_policy_assignment_download   - Download policy assignment"
     echo "  az_policy_definition_deploy     - Create/Update policy definition"
     echo "  az_policy_assignment_deploy     - Create/Update policy assignment"
