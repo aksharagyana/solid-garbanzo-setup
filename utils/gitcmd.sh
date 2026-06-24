@@ -681,38 +681,267 @@ git_trigger_pipeline() {
     git push origin "$branch"
 }
 
+_git_merge_fix_trailing_whitespace() {
+    local f
+    for f in "$@"; do
+        [[ -f "${f}" ]] || continue
+        perl -pi -e 's/\s+$//' "${f}" 2>/dev/null || \
+            sed -i 's/[[:space:]]*$//' "${f}" 2>/dev/null || true
+    done
+}
 
-git_revert_last_commit(){
-  # 1. Get the current branch name
-  BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  
-  # 2. Check if we are actually in a git repository
-  if [ $? -ne 0 ]; then
-      echo "Error: This directory is not a git repository."
-      exit 1
-  fi
-  
-  echo "Targeting branch: $BRANCH"
-  
-  # 3. Revert the last commit
-  # --no-edit keeps the default "Revert '...'" message to stay automated
-  git revert HEAD --no-edit
-  
-  # 4. Check if revert was successful (e.g., no conflicts)
-  if [ $? -eq 0 ]; then
-      echo "Revert successful. Pushing to origin/$BRANCH..."
-      git push origin "$BRANCH"
-  else
-      echo "Error: Revert failed. You might have manual conflicts to resolve."
-      exit 1
-  fi
-  
-  echo "Done! The last commit has been undone and pushed."
+_git_merge_whitespace_error_files() {
+    {
+        git diff --check 2>&1 || true
+        git diff --cached --check 2>&1 || true
+    } | sed -n 's/^\([^:]*\):[0-9]*: trailing whitespace\./\1/p' | sort -u
+}
+
+_git_merge_conflict_files() {
+    git diff --name-only --diff-filter=U 2>/dev/null
+}
+
+_git_merge_in_progress() {
+    local git_dir
+    git_dir=$(git rev-parse --git-dir 2>/dev/null) || return 1
+    [[ -f "${git_dir}/MERGE_HEAD" ]]
+}
+
+_git_merge_stash_if_dirty() {
+    if [[ -n "$(git status --porcelain)" ]]; then
+        info "Stashing uncommitted changes before merge (including untracked files)"
+        git stash push -u -m "auto-stash before git_merge ($(date +%Y%m%d-%H%M%S))" || return 1
+        return 0
+    fi
+    return 1
+}
+
+_git_merge_pop_stash_if_any() {
+    local had_stash="${1:-0}"
+    local top_stash
+
+    [[ "${had_stash}" -eq 1 ]] || return 0
+
+    top_stash=$(git stash list | head -n1)
+    if [[ "${top_stash}" != *'auto-stash before git_merge'* ]]; then
+        echo "WARNING: Expected git_merge stash not at stash@{0} — re-apply manually: git stash list" >&2
+        return 1
+    fi
+
+    info "Re-applying stashed changes"
+    git stash pop || {
+        echo "WARNING: Stash pop had conflicts — resolve manually with: git stash list" >&2
+        return 1
+    }
+    return 0
+}
+
+_git_merge_abort_and_cleanup() {
+    if _git_merge_in_progress; then
+        git merge --abort 2>/dev/null || true
+    fi
+}
+
+_git_merge_complete() {
+    local f
+    local ws_files=()
+    while IFS= read -r f; do
+        [[ -n "${f}" ]] && ws_files+=("${f}")
+    done < <(_git_merge_whitespace_error_files)
+
+    if [[ ${#ws_files[@]} -gt 0 ]]; then
+        info "Fixing trailing whitespace in ${#ws_files[@]} file(s)"
+        _git_merge_fix_trailing_whitespace "${ws_files[@]}"
+        git add -- "${ws_files[@]}" 2>/dev/null || true
+    fi
+
+    GIT_EDITOR=true git commit --no-edit
+}
+
+_git_merge_resolve_conflicts() {
+    local side="$1"
+    local source_branch="$2"
+    local target_branch="$3"
+    local file
+
+    while IFS= read -r file; do
+        [[ -z "${file}" ]] && continue
+        case "${side}" in
+            source)
+                git checkout --theirs -- "${file}" || return 1
+                ;;
+            target)
+                git checkout --ours -- "${file}" || return 1
+                ;;
+            *)
+                echo "ERROR: Unknown conflict resolution side: ${side}" >&2
+                return 1
+                ;;
+        esac
+        _git_merge_fix_trailing_whitespace "${file}"
+        git add -- "${file}" || return 1
+    done < <(_git_merge_conflict_files)
+
+    echo "Resolved conflicts using ${side} version"
+    echo "  source (${source_branch}) → theirs"
+    echo "  target (${target_branch}) → ours"
+    _git_merge_complete
+}
+
+_git_merge_handle_failure() {
+    local merge_rc="$1"
+    local source_branch="$2"
+    local target_branch="$3"
+    local merge_log="$4"
+    local conflict_files=()
+    local file
+    local choice
+    local resolve_side=""
+
+    echo "ERROR: Merge failed (exit ${merge_rc})." >&2
+    if [[ -n "${merge_log}" ]]; then
+        echo "${merge_log}" | tail -n 20
+    fi
+
+    if echo "${merge_log}" | grep -qiE 'whitespace|trailing whitespace'; then
+        info "Whitespace issues detected — attempting automatic fix"
+        local ws_files=()
+        while IFS= read -r file; do
+            [[ -n "${file}" ]] && ws_files+=("${file}")
+        done < <(_git_merge_whitespace_error_files)
+
+        if [[ ${#ws_files[@]} -eq 0 ]]; then
+            while IFS= read -r file; do
+                [[ -n "${file}" ]] && ws_files+=("${file}")
+            done < <(git diff --name-only; git diff --cached --name-only)
+        fi
+
+        if [[ ${#ws_files[@]} -gt 0 ]]; then
+            _git_merge_fix_trailing_whitespace "${ws_files[@]}"
+            git add -A 2>/dev/null || true
+            if _git_merge_in_progress; then
+                if _git_merge_complete; then
+                    echo "Merge completed after fixing whitespace."
+                    return 0
+                fi
+            else
+                info "Retrying merge after whitespace fix"
+                return 2
+            fi
+        fi
+    fi
+
+    if ! _git_merge_in_progress; then
+        echo "Merge did not start (no MERGE_HEAD). Check branch names, local changes, or remote state." >&2
+        return "${merge_rc}"
+    fi
+
+    while IFS= read -r file; do
+        [[ -n "${file}" ]] && conflict_files+=("${file}")
+    done < <(_git_merge_conflict_files)
+
+    if [[ ${#conflict_files[@]} -eq 0 ]]; then
+        echo "Merge is in progress but no unmerged files were found." >&2
+        echo "Resolve manually, then: git commit --no-edit" >&2
+        echo "Or abort with: git merge --abort" >&2
+        return "${merge_rc}"
+    fi
+
+    echo ""
+    echo "Conflicting files (${#conflict_files[@]}):"
+    for file in "${conflict_files[@]}"; do
+        echo "  - ${file}"
+    done
+    echo ""
+    echo "During merge into '${target_branch}':"
+    echo "  source (${source_branch}) = theirs"
+    echo "  target (${target_branch}) = ours"
+    echo ""
+
+    if [[ -n "${GIT_MERGE_RESOLVE:-}" ]]; then
+        case "${GIT_MERGE_RESOLVE}" in
+            source|theirs) resolve_side="source" ;;
+            target|ours) resolve_side="target" ;;
+            abort)
+                _git_merge_abort_and_cleanup
+                echo "Merge aborted."
+                return 1
+                ;;
+            *)
+                echo "ERROR: Invalid GIT_MERGE_RESOLVE='${GIT_MERGE_RESOLVE}' (use source|target|abort)" >&2
+                return 1
+                ;;
+        esac
+    elif [[ ! -t 0 ]]; then
+        echo "Non-interactive shell — set GIT_MERGE_RESOLVE=source|target|abort or resolve manually." >&2
+        echo "  git merge --abort" >&2
+        return "${merge_rc}"
+    else
+        PS3="Choose conflict resolution: "
+        select choice in \
+            "Use source (${source_branch}) for all conflicts" \
+            "Use target (${target_branch}) for all conflicts" \
+            "Abort merge" \
+            "Leave conflicts for manual resolution"
+        do
+            case "${REPLY}" in
+                1) resolve_side="source"; break ;;
+                2) resolve_side="target"; break ;;
+                3)
+                    _git_merge_abort_and_cleanup
+                    echo "Merge aborted."
+                    return 1
+                    ;;
+                4)
+                    echo "Conflicts left in place. Resolve files, then run:"
+                    echo "  git add <files>"
+                    echo "  git commit --no-edit"
+                    echo "Or abort with:"
+                    echo "  git merge --abort"
+                    return "${merge_rc}"
+                    ;;
+                *) echo "Invalid selection." ;;
+            esac
+        done
+    fi
+
+    if [[ -n "${resolve_side}" ]]; then
+        _git_merge_resolve_conflicts "${resolve_side}" "${source_branch}" "${target_branch}" || return 1
+        echo "Merge completed after resolving conflicts."
+        return 0
+    fi
+
+    return "${merge_rc}"
+}
+
+git_revert_last_commit() {
+    local branch
+
+    git rev-parse --is-inside-work-tree &>/dev/null || {
+        echo "Error: This directory is not a git repository." >&2
+        return 1
+    }
+
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    echo "Targeting branch: ${branch}"
+
+    git revert HEAD --no-edit || {
+        echo "Error: Revert failed. You might have manual conflicts to resolve." >&2
+        return 1
+    }
+
+    echo "Revert successful. Pushing to origin/${branch}..."
+    git push origin "${branch}" || return 1
+
+    echo "Done! The last commit has been undone and pushed."
 }
 
 git_merge() {
     local source_branch=""
     local target_branch=""
+    local stashed=0
+    local merge_rc=0
+    local merge_log=""
 
     usage() {
         cat <<EOF
@@ -726,10 +955,14 @@ Options:
   -t    Target branch to merge into (default: current branch)
   -h    Show this help
 
+Environment:
+  GIT_MERGE_RESOLVE   Non-interactive conflict resolution: source | target | abort
+
 Examples:
   git_merge                                    # merge main into current branch
   git_merge -s main -t feature/my-branch
   git_merge -s develop                         # merge develop into current branch
+  GIT_MERGE_RESOLVE=source git_merge -s main   # take incoming branch on conflicts
 EOF
     }
 
@@ -788,29 +1021,66 @@ EOF
         return 1
     fi
 
+    if _git_merge_stash_if_dirty; then
+        stashed=1
+    fi
+
     echo "Source: ${source_branch}"
     echo "Target: ${target_branch}"
     echo "Checking out target branch: ${target_branch}"
-    git checkout "${target_branch}" || return 1
+    git checkout "${target_branch}" || {
+        [[ ${stashed} -eq 1 ]] && _git_merge_pop_stash_if_any "${stashed}"
+        return 1
+    }
 
     echo "Pulling latest changes..."
-    git pull origin "${target_branch}" || return 1
+    git pull origin "${target_branch}" || {
+        [[ ${stashed} -eq 1 ]] && _git_merge_pop_stash_if_any "${stashed}"
+        return 1
+    }
 
     echo "Merging ${source_branch} into ${target_branch}..."
 
-    GIT_EDITOR=true git merge \
-        --no-ff \
-        --no-edit \
-        "${source_branch}"
+    local merge_attempt=0
+    while [[ ${merge_attempt} -lt 2 ]]; do
+        merge_rc=0
+        merge_log=$(
+            GIT_EDITOR=true git -c core.whitespace=fix merge \
+                --no-ff \
+                --no-edit \
+                "${source_branch}" 2>&1
+        ) || merge_rc=$?
 
-    merge_rc=$?
+        if [[ ${merge_rc} -eq 0 ]]; then
+            break
+        fi
+
+        if _git_merge_handle_failure "${merge_rc}" "${source_branch}" "${target_branch}" "${merge_log}"; then
+            merge_rc=0
+            break
+        fi
+
+        local handle_rc=$?
+        if [[ ${handle_rc} -eq 2 ]]; then
+            merge_attempt=$((merge_attempt + 1))
+            continue
+        fi
+
+        [[ ${stashed} -eq 1 ]] && {
+            echo "Your pre-merge stash was kept. Re-apply later with: git stash pop" >&2
+        }
+        return "${merge_rc}"
+    done
 
     if [[ ${merge_rc} -ne 0 ]]; then
-        echo "ERROR: Merge failed."
-        echo "If this is a conflict, resolve it manually and run
-        :"
-        echo "  git merge --abort"
-        return ${merge_rc}
+        [[ ${stashed} -eq 1 ]] && {
+            echo "Your pre-merge stash was kept. Re-apply later with: git stash pop" >&2
+        }
+        return "${merge_rc}"
+    fi
+
+    if [[ ${stashed} -eq 1 ]]; then
+        _git_merge_pop_stash_if_any "${stashed}" || return 1
     fi
 
     echo "Merge completed successfully."
