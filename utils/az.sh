@@ -124,3 +124,60 @@ az_set_access_token(){
   export AZURE_ACCESS_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
   echo "Azure access token set in environment variable AZURE_ACCESS_TOKEN"
 }
+
+# ================================================
+# Tenant-wide Azure inventory helpers
+# ================================================
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+    _AZ_UTILS_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
+else
+    _AZ_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+_AZ_LIST_RESOURCE_TYPES_PY="${_AZ_UTILS_DIR}/az_list_resource_types.py"
+
+_az_require_python() {
+    if [[ ! -f "$_AZ_LIST_RESOURCE_TYPES_PY" ]]; then
+        echo "Error: Python helper not found: $_AZ_LIST_RESOURCE_TYPES_PY" >&2
+        return 1
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Error: python3 is required but not installed" >&2
+        return 1
+    fi
+}
+
+# List unique resource types deployed across the current Azure tenant.
+# Uses Azure CLI login credentials and Resource Graph (--allow-partial-scopes).
+# Not limited to the CLI default subscription.
+az_list_resource_types() {
+    if ! _az_require_python; then
+        return 1
+    fi
+
+    local -a py_args=()
+
+    OPTIND=1
+    while getopts "f:o:qh" opt; do
+        case $opt in
+            f) py_args+=(-f "$OPTARG") ;;
+            o) py_args+=(-o "$OPTARG") ;;
+            q) py_args+=(-q) ;;
+            h)
+                echo "Usage: az_list_resource_types [-f lines|txt|json] [-o <output_file>] [-q]"
+                echo "  List unique Azure resource types deployed tenant-wide."
+                echo ""
+                echo "  Examples:"
+                echo "    az_list_resource_types"
+                echo "    az_list_resource_types -f json -o resource-types.json"
+                echo ""
+                echo "  Uses the logged-in Azure CLI user and tenant."
+                echo "  Queries all subscriptions the user can access (not only the default subscription)."
+                return 0
+                ;;
+            *) echo "Invalid option"; return 1 ;;
+        esac
+    done
+
+    (cd "$_AZ_UTILS_DIR" && python3 "$_AZ_LIST_RESOURCE_TYPES_PY" "${py_args[@]}")
+}
