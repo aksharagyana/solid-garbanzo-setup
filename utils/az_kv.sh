@@ -250,3 +250,332 @@ az_kv_help() {
   echo ""
 }
 
+# Remediation: enable soft delete + purge protection (irreversible once purge protection is on).
+
+_KV_POLICY_DELETION_PROTECTION_ID="0b60c0b2-2dc2-4e1c-b5c9-abbed971de53"
+
+function _kv_show_help() {
+    local func="$1"
+    case $func in
+        kv_remediate_deletion_protection)
+            echo "Usage: kv_remediate_deletion_protection (-i <vault_id> | -g <resource_group> -n <vault_name>) [-s <subscription>] [-yq]"
+            echo "  Remediate Azure Policy 'Key vaults should have deletion protection enabled'"
+            echo "  (${_KV_POLICY_DELETION_PROTECTION_ID}) by enabling purge protection"
+            echo "  (soft delete is required and is on by default for modern vaults)."
+            echo ""
+            echo "  Provide either:"
+            echo "    -i  Full Key Vault ARM resource id"
+            echo "        /subscriptions/.../resourceGroups/.../providers/Microsoft.KeyVault/vaults/<name>"
+            echo "  or both:"
+            echo "    -g  Resource group name"
+            echo "    -n  Key Vault name"
+            echo ""
+            echo "  Optional:"
+            echo "    -s  Subscription id or name (default: current az account, or from -i)"
+            echo "    -y  Skip confirmation (purge protection cannot be turned off once enabled)"
+            echo "    -q  Quiet — only print errors and final status"
+            echo "    -h  Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  kv_remediate_deletion_protection -i /subscriptions/.../resourceGroups/rg/providers/Microsoft.KeyVault/vaults/mykv"
+            echo "  kv_remediate_deletion_protection -g rg-app -n kv-app -y"
+            ;;
+        kv_show_deletion_protection)
+            echo "Usage: kv_show_deletion_protection (-i <vault_id> | -g <resource_group> -n <vault_name>) [-s <subscription>]"
+            echo "  Show soft-delete / purge-protection state for a Key Vault (policy ${_KV_POLICY_DELETION_PROTECTION_ID})."
+            ;;
+        *)
+            echo "Unknown function"
+            ;;
+    esac
+}
+
+function _kv_require_az() {
+    if ! command -v az >/dev/null 2>&1; then
+        echo "Error: Azure CLI (az) is required but not installed" >&2
+        return 1
+    fi
+
+    if ! az account show >/dev/null 2>&1; then
+        echo "Error: not logged in to Azure CLI (az login)" >&2
+        return 1
+    fi
+}
+
+# Parse Key Vault ARM id into subscription / resource group / name.
+# Sets: KV_SUBSCRIPTION_ID, KV_RESOURCE_GROUP, KV_NAME, KV_ID
+function _kv_parse_vault_id() {
+    local id="${1%/}"
+    KV_SUBSCRIPTION_ID=""
+    KV_RESOURCE_GROUP=""
+    KV_NAME=""
+    KV_ID=""
+
+    local id_lc
+    id_lc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+
+    case "$id_lc" in
+        /subscriptions/*/resourcegroups/*/providers/microsoft.keyvault/vaults/*) ;;
+        *)
+            echo "Error: invalid Key Vault resource id: $id" >&2
+            echo "Expected: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.KeyVault/vaults/<name>" >&2
+            return 1
+            ;;
+    esac
+
+    # Portable path-segment extraction (bash + zsh)
+    KV_SUBSCRIPTION_ID="$(printf '%s' "$id" | cut -d'/' -f3)"
+    KV_RESOURCE_GROUP="$(printf '%s' "$id" | cut -d'/' -f5)"
+    KV_NAME="$(printf '%s' "$id" | cut -d'/' -f9)"
+
+    if [[ -z "$KV_SUBSCRIPTION_ID" || -z "$KV_RESOURCE_GROUP" || -z "$KV_NAME" ]]; then
+        echo "Error: invalid Key Vault resource id: $id" >&2
+        return 1
+    fi
+
+    KV_ID="/subscriptions/${KV_SUBSCRIPTION_ID}/resourceGroups/${KV_RESOURCE_GROUP}/providers/Microsoft.KeyVault/vaults/${KV_NAME}"
+}
+
+# Resolve targeting args into KV_SUBSCRIPTION_ID / KV_RESOURCE_GROUP / KV_NAME / KV_ID.
+# Usage: _kv_resolve_target <vault_id> <resource_group> <vault_name> <subscription>
+function _kv_resolve_target() {
+    local vault_id="$1"
+    local resource_group="$2"
+    local vault_name="$3"
+    local subscription="$4"
+
+    KV_SUBSCRIPTION_ID=""
+    KV_RESOURCE_GROUP=""
+    KV_NAME=""
+    KV_ID=""
+
+    if [[ -n "$vault_id" ]]; then
+        if [[ -n "$resource_group" || -n "$vault_name" ]]; then
+            echo "Error: when -i is set, do not also pass -g / -n" >&2
+            return 1
+        fi
+        if ! _kv_parse_vault_id "$vault_id"; then
+            return 1
+        fi
+        [[ -n "$subscription" ]] && KV_SUBSCRIPTION_ID="$subscription"
+        return 0
+    fi
+
+    if [[ -z "$resource_group" || -z "$vault_name" ]]; then
+        echo "Error: provide -i <vault_id>, or both -g <resource_group> and -n <vault_name>" >&2
+        return 1
+    fi
+
+    KV_RESOURCE_GROUP="$resource_group"
+    KV_NAME="$vault_name"
+    if [[ -n "$subscription" ]]; then
+        KV_SUBSCRIPTION_ID="$subscription"
+    else
+        KV_SUBSCRIPTION_ID="$(az account show --query id -o tsv 2>/dev/null)" || true
+    fi
+
+    if [[ -z "$KV_SUBSCRIPTION_ID" ]]; then
+        echo "Error: could not determine subscription; pass -s <subscription>" >&2
+        return 1
+    fi
+
+    KV_ID="/subscriptions/${KV_SUBSCRIPTION_ID}/resourceGroups/${KV_RESOURCE_GROUP}/providers/Microsoft.KeyVault/vaults/${KV_NAME}"
+}
+
+function _kv_norm_bool() {
+    # Azure may return true/false/null/None/empty — map to true|false|""
+    local v
+    v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    case "$v" in
+        true) printf 'true' ;;
+        false|null|none|"") printf 'false' ;;
+        *) printf '' ;;
+    esac
+}
+
+function _kv_read_protection_state() {
+    # Sets: KV_SOFT_DELETE, KV_PURGE_PROTECTION (true/false)
+    # az --query '[a,b]' -o tsv emits one value per line.
+    local -a show_args=(
+        keyvault show
+        --name "$KV_NAME"
+        --resource-group "$KV_RESOURCE_GROUP"
+        --query "[properties.enableSoftDelete, properties.enablePurgeProtection]"
+        --output tsv
+    )
+    [[ -n "$KV_SUBSCRIPTION_ID" ]] && show_args+=(--subscription "$KV_SUBSCRIPTION_ID")
+
+    local out soft purge
+    if ! out="$(az "${show_args[@]}" 2>/dev/null)"; then
+        echo "Error: Key Vault not found or inaccessible: ${KV_ID:-$KV_NAME}" >&2
+        return 1
+    fi
+
+    soft="$(printf '%s\n' "$out" | sed -n '1p')"
+    purge="$(printf '%s\n' "$out" | sed -n '2p')"
+    KV_SOFT_DELETE="$(_kv_norm_bool "$soft")"
+    KV_PURGE_PROTECTION="$(_kv_norm_bool "$purge")"
+}
+
+# ================================================
+# Show soft-delete / purge-protection state
+# ================================================
+kv_show_deletion_protection() {
+    local vault_id="" resource_group="" vault_name="" subscription=""
+
+    OPTIND=1
+    while getopts "i:g:n:s:h" opt; do
+        case $opt in
+            i) vault_id="$OPTARG" ;;
+            g) resource_group="$OPTARG" ;;
+            n) vault_name="$OPTARG" ;;
+            s) subscription="$OPTARG" ;;
+            h) _kv_show_help "kv_show_deletion_protection"; return 0 ;;
+            *) echo "Invalid option"; _kv_show_help "kv_show_deletion_protection"; return 1 ;;
+        esac
+    done
+
+    if ! _kv_require_az; then
+        return 1
+    fi
+
+    if ! _kv_resolve_target "$vault_id" "$resource_group" "$vault_name" "$subscription"; then
+        _kv_show_help "kv_show_deletion_protection"
+        return 1
+    fi
+
+    if ! _kv_read_protection_state; then
+        return 1
+    fi
+
+    local compliant="false"
+    if [[ "$KV_SOFT_DELETE" == "true" && "$KV_PURGE_PROTECTION" == "true" ]]; then
+        compliant="true"
+    fi
+
+    echo "vaultId:            $KV_ID"
+    echo "enableSoftDelete:   ${KV_SOFT_DELETE:-unknown}"
+    echo "enablePurgeProtection: ${KV_PURGE_PROTECTION:-unknown}"
+    echo "policyCompliant:    $compliant  (${_KV_POLICY_DELETION_PROTECTION_ID})"
+}
+
+# ================================================
+# Remediate deletion protection (soft delete + purge protection)
+# ================================================
+kv_remediate_deletion_protection() {
+    local vault_id="" resource_group="" vault_name="" subscription=""
+    local assume_yes="false" quiet="false"
+
+    OPTIND=1
+    while getopts "i:g:n:s:yqh" opt; do
+        case $opt in
+            i) vault_id="$OPTARG" ;;
+            g) resource_group="$OPTARG" ;;
+            n) vault_name="$OPTARG" ;;
+            s) subscription="$OPTARG" ;;
+            y) assume_yes="true" ;;
+            q) quiet="true" ;;
+            h) _kv_show_help "kv_remediate_deletion_protection"; return 0 ;;
+            *) echo "Invalid option"; _kv_show_help "kv_remediate_deletion_protection"; return 1 ;;
+        esac
+    done
+
+    if ! _kv_require_az; then
+        return 1
+    fi
+
+    if ! _kv_resolve_target "$vault_id" "$resource_group" "$vault_name" "$subscription"; then
+        _kv_show_help "kv_remediate_deletion_protection"
+        return 1
+    fi
+
+    if ! _kv_read_protection_state; then
+        return 1
+    fi
+
+    [[ "$quiet" != "true" ]] && {
+        echo "Key Vault: $KV_ID"
+        echo "  enableSoftDelete:      ${KV_SOFT_DELETE:-unknown}"
+        echo "  enablePurgeProtection: ${KV_PURGE_PROTECTION:-unknown}"
+        echo "Policy: ${_KV_POLICY_DELETION_PROTECTION_ID} (deletion protection)"
+    }
+
+    if [[ "$KV_SOFT_DELETE" == "true" && "$KV_PURGE_PROTECTION" == "true" ]]; then
+        [[ "$quiet" != "true" ]] && echo "Already compliant — no changes required."
+        return 0
+    fi
+
+    if [[ "$KV_SOFT_DELETE" != "true" ]]; then
+        echo "Error: soft delete is not enabled on '$KV_NAME'." >&2
+        echo "Modern az CLI cannot toggle soft delete on update (vaults created after 2019-09-01 enable it by default)." >&2
+        return 1
+    fi
+
+    if [[ "$assume_yes" != "true" ]]; then
+        echo ""
+        echo "This will enable purge protection (soft delete is already on)."
+        echo "Purge protection cannot be disabled once enabled."
+        printf "Continue? [y/N] "
+        local reply
+        read -r reply
+        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+            echo "Aborted."
+            return 1
+        fi
+    fi
+
+    local -a update_args=(
+        keyvault update
+        --name "$KV_NAME"
+        --resource-group "$KV_RESOURCE_GROUP"
+        --enable-purge-protection true
+    )
+    [[ -n "$KV_SUBSCRIPTION_ID" ]] && update_args+=(--subscription "$KV_SUBSCRIPTION_ID")
+
+    [[ "$quiet" != "true" ]] && echo "Enabling purge protection on Key Vault..."
+    if ! az "${update_args[@]}" --output none; then
+        echo "Error: failed to update Key Vault '$KV_NAME'" >&2
+        return 1
+    fi
+
+    if ! _kv_read_protection_state; then
+        return 1
+    fi
+
+    if [[ "$KV_SOFT_DELETE" == "true" && "$KV_PURGE_PROTECTION" == "true" ]]; then
+        [[ "$quiet" != "true" ]] && echo "Remediation complete — vault is policy-compliant."
+        return 0
+    fi
+
+    echo "Error: update finished but vault is still non-compliant (softDelete=${KV_SOFT_DELETE:-unknown}, purgeProtection=${KV_PURGE_PROTECTION:-unknown})" >&2
+    return 1
+}
+
+# ================================================
+# Help Command
+# ================================================
+_kv_help() {
+    echo "Azure Key Vault Helper Functions"
+    echo ""
+    echo "Available functions:"
+    echo "  kv_remediate_deletion_protection - Enable soft delete + purge protection"
+    echo "  kv_show_deletion_protection      - Show soft delete / purge protection state"
+    echo "  kv_help                          - Show this help"
+    echo ""
+    echo "Policy: Key vaults should have deletion protection enabled"
+    echo "  ${_KV_POLICY_DELETION_PROTECTION_ID}"
+    echo "  https://www.azadvertizer.net/azpolicyadvertizer/${_KV_POLICY_DELETION_PROTECTION_ID}.html"
+    echo ""
+    echo "Use -h with any function for detailed usage."
+    echo ""
+    echo "Example:"
+    echo "  source utils/keyvault.sh"
+    echo "  kv_show_deletion_protection -g my-rg -n my-kv"
+    echo "  kv_remediate_deletion_protection -i /subscriptions/.../resourceGroups/my-rg/providers/Microsoft.KeyVault/vaults/my-kv -y"
+    echo "  kv_remediate_deletion_protection -g my-rg -n my-kv -s <subscription-id>"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    _kv_help
+fi
+
