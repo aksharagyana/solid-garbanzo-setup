@@ -1085,3 +1085,83 @@ EOF
 
     echo "Merge completed successfully."
 }
+
+
+git_sync_merge() {
+    local branch_arg=""
+    local current_branch=""
+    local default_branch=""
+    local strategy=""
+
+    # 1. Parse arguments
+    OPTIND=1 # Reset index in case the function was run previously in the same session
+    while getopts ":b:" opt; do
+        case ${opt} in
+            b ) branch_arg="$OPTARG" ;;
+            \? ) echo "Error: Invalid option -$OPTARG" >&2; return 1 ;;
+            : ) echo "Error: Option -$OPTARG requires an argument." >&2; return 1 ;;
+        esac
+    done
+    shift $((OPTIND -1))
+
+    # 2. Verify git repository
+    if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "Error: Not a git repository." >&2
+        return 1
+    fi
+
+    # 3. Get current and default branch names cleanly
+    current_branch=$(git branch --show-current)
+    default_branch=$(git refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||')
+    
+    if [ -z "$default_branch" ]; then
+        default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+    fi
+    if [ -z "$default_branch" ]; then
+        if git show-ref --verify --quiet refs/heads/main; then default_branch="main"; else default_branch="master"; fi
+    fi
+
+    # 4. Git-based validation (Compares commit hashes instead of string variables)
+    local input_hash current_hash default_hash
+    input_hash=$(git rev-parse --verify "$branch_arg" 2>/dev/null)
+    current_hash=$(git rev-parse --verify "$current_branch" 2>/dev/null)
+    default_hash=$(git rev-parse --verify "$default_branch" 2>/dev/null)
+
+    if [ -z "$input_hash" ] || { [ "$input_hash" != "$current_hash" ] && [ "$input_hash" != "$default_hash" ]; }; then
+        echo "Error: Invalid branch provided." >&2
+        echo "The -b option must match either the default branch or the current branch." >&2
+        echo "Allowed branch names: '$default_branch' (default) or '$current_branch' (current)." >&2
+        return 1
+    fi
+
+    # 5. Determine conflict resolution strategy
+    if [ "$input_hash" == "$current_hash" ]; then
+        strategy="ours"
+    else
+        strategy="theirs"
+    fi
+
+    echo "Attempting to merge '$default_branch' into '$current_branch'..."
+    
+    # 6. Execute merge
+    if git merge "$default_branch" --no-edit; then
+        echo "Merge completed successfully without conflicts."
+    else
+        echo "Conflicts detected. Automatically resolving using changes from '$branch_arg' ($strategy)..."
+        
+        # 7. Safe Conflict Resolution (Handles Modifications and Deletions)
+        git diff --name-only --diff-filter=U | while read -r file; do
+            if [ -z "$file" ]; then continue; fi
+
+            if git checkout --"$strategy" "$file" &>/dev/null; then
+                git add "$file"
+            else
+                git rm "$file" &>/dev/null
+            fi
+        done
+        
+        # Commit the resolved merge
+        git commit --no-edit
+        echo "Merge conflicts successfully resolved using '$branch_arg'."
+    fi
+}
