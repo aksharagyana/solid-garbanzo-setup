@@ -329,3 +329,55 @@ helm_package_push() {
 
     helm push "$chart_package" "$oci_repo"
 }
+
+# Uninstall all failed and pending Helm releases in a specified namespace
+helm_cleanup_failed_releases() {
+    local namespace=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--namespace)
+                namespace="$2"
+                shift 2
+                ;;
+            *)
+                echo "Error: Unknown option $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # Validate namespace input
+    if [[ -z "$namespace" ]]; then
+        echo "Error: Namespace is required. Use -n or --namespace." >&2
+        return 1
+    fi
+
+    echo "Searching for failed or pending Helm releases in namespace: ${namespace}..."
+
+    # Helm 3 allows combining status filters. 
+    # -q outputs only the short release names.
+    local broken_releases
+    broken_releases=$(helm list -n "$namespace" --failed --pending -q)
+
+    if [[ -z "$broken_releases" ]]; then
+        echo "No failed or pending releases found in namespace: ${namespace}."
+        return 0
+    fi
+
+    # Loop through and uninstall each target release
+    echo "Found the following releases to clean up:"
+    echo "$broken_releases"
+    echo "------------------------------------"
+
+    echo "$broken_releases" | while read -r release; do
+        if [[ -n "$release" ]]; then
+            echo "Uninstalling release: ${release}..."
+            helm uninstall "$release" -n "$namespace"
+        fi
+    done
+
+    echo "Cleanup complete."
+}
+
